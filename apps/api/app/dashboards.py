@@ -19,9 +19,10 @@ from .audit import record_event
 from .db import DashboardDraft, DashboardPublication, DashboardVersion, ReviewAction, utcnow
 from .errors import Conflict, Forbidden, NotFound, ValidationFailed
 from .identity import UserContext
+from .planner import _fmt_month, _period_label
 from .policy import validate_results, validate_spec
 from .runtime import Container
-from .schema import DashboardSpec, DraftPatch, Intent
+from .schema import DashboardSpec, DraftPatch, Intent, PreviewRequest
 from .tableau_artifact import build_twbx
 
 EDITABLE_STATUSES = {"Draft", "Needs Review", "Ready to Publish", "Failed", "Published"}
@@ -215,17 +216,42 @@ def validate_draft(db: Session, c: Container, draft: DashboardDraft, user: UserC
     return full
 
 
-def preview(db: Session, c: Container, draft: DashboardDraft, user: UserContext) -> dict:
-    report, spec = _validate(c, draft.spec, user)
+def preview(db: Session, c: Container, draft: DashboardDraft, user: UserContext, view: PreviewRequest | None = None) -> dict:
+    """Run the draft. `view` applies viewer-side filters and period for exploration only; the draft is unchanged."""
+    raw = DashboardSpec.model_validate(draft.spec).model_dump(mode="json")
+    customized = False
+    if view is not None:
+        if view.filters is not None:
+            raw["filters"] = [f.model_dump() for f in view.filters]
+        if view.time_range_start is not None:
+            raw["time_range"]["start"] = view.time_range_start.isoformat()
+        if view.time_range_end is not None:
+            raw["time_range"]["end"] = view.time_range_end.isoformat()
+        customized = raw["filters"] != draft.spec.get("filters", []) or raw["time_range"] != draft.spec["time_range"]
+    report, spec = _validate(c, raw, user)
     if not report.valid:
+        if customized:
+            raise ValidationFailed("That filter is not allowed: " + report.errors[0]["message"], code="VIEW_FILTER_INVALID", details=report.as_dict())
         raise ValidationFailed("The specification is not valid; fix it before previewing.", code="SPEC_INVALID", details=report.as_dict())
     results = c.data.execute_validated_plan(spec, user)
+    saved = DashboardSpec.model_validate(draft.spec).time_range
+    if (saved.start, saved.end) != (spec.time_range.start, spec.time_range.end):
+        # Titles carry the saved period; relabel them so a custom view never shows a stale period.
+        relabel = {
+            _period_label(saved.start, saved.end): _period_label(spec.time_range.start, spec.time_range.end),
+            f"as of {_fmt_month(saved.end)}": f"as of {_fmt_month(spec.time_range.end)}",
+        }
+        for r in results:
+            for old, new in relabel.items():
+                r.title = r.title.replace(old, new)
     rr = validate_results(spec, results, c.catalog, max_rows=c.settings.max_result_rows, max_series=c.settings.max_series)
     ds = c.catalog.dataset(spec.dataset_id)
-    record_event(db, user, "dashboard.preview", resource_type="dashboard", resource_id=draft.id, details={"version": draft.current_version, "result_valid": rr.valid})
+    record_event(db, user, "dashboard.preview", resource_type="dashboard", resource_id=draft.id,
+                 details={"version": draft.current_version, "result_valid": rr.valid, "custom_view": customized})
     return {
         "draft_id": draft.id,
         "version": draft.current_version,
+        "view": {"customized": customized, "filters": [f.model_dump() for f in spec.filters], "time_range": spec.time_range.model_dump(mode="json")},
         "results": [r.as_dict() for r in results],
         "result_validation": rr.as_dict(),
         "provenance": {

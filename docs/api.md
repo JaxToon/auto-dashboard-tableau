@@ -20,7 +20,7 @@ Send `X-Request-ID` to set the correlation ID; it is echoed back and written to 
 | GET | `/api/v1/dashboards/{id}` | owner, or reviewer once submitted | Draft, versions, reviews, publications |
 | PATCH | `/api/v1/dashboards/{id}` | owner | `title, description, layout, time_range_start, time_range_end, filters, chart_types, visualization_titles, remove_visualizations` → new version |
 | POST | `/api/v1/dashboards/{id}/validate` | reader | Spec + result validation report |
-| POST | `/api/v1/dashboards/{id}/preview` | reader | Validated results + provenance |
+| POST | `/api/v1/dashboards/{id}/preview` | reader | Validated results + provenance. Optional body `{filters, time_range_start, time_range_end}` applies a viewer-side view (validated against the catalog, never saved); `view.customized` says whether it differs from the saved draft |
 | POST | `/api/v1/dashboards/{id}/submit-review` | owner | → Needs Review (or Ready to Publish when review is off) |
 | POST | `/api/v1/dashboards/{id}/approve` | `dashboard:review`, not owner | `{decision: approved\|changes_requested, comment}` |
 | POST | `/api/v1/dashboards/{id}/publish` | owner with `dashboard:publish` | `{confirm: true, target_project_id?}` → publication (Published only when verified) |

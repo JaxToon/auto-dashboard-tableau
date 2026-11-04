@@ -9,4 +9,5 @@
 7. **Docker compose not verified.** `docker compose config` validates, but images were not built in this environment (Docker Desktop was not running).
 8. **No browser E2E test suite.** The UI flow was checked manually with Playwright screenshots; API flows are covered by integration tests.
 9. **Two chart families only** (line, bar) plus KPI cards and tables.
-10. **Recommendations use simulated events** (clearly labelled) plus local questions; clustering is exact-match on normalized intent, not embeddings.
+10. **Interactive filters live in the app, not in Tableau.** The review page lets any reader filter by period, region, segment and branch without changing the draft; saving a filter creates a new version that needs review. The published Tableau workbook contains pre-aggregated results for the saved view only, so it has no quick filters. Adding Tableau-side filters would need a finer-grained extract (Hyper) and recalculated KPIs in the workbook.
+11. **Recommendations use simulated events** (clearly labelled) plus local questions; clustering is exact-match on normalized intent, not embeddings.

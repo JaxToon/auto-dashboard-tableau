@@ -142,6 +142,14 @@ class DraftPatch(Strict):
     remove_visualizations: list[str] | None = None
 
 
+class PreviewRequest(Strict):
+    """Viewer-side filters for exploring a draft. They are validated like the spec but never saved."""
+
+    filters: list[FilterSpec] | None = Field(default=None, max_length=6)
+    time_range_start: date | None = None
+    time_range_end: date | None = None
+
+
 class ApproveRequest(Strict):
     decision: Literal["approved", "changes_requested"]
     comment: str = Field(default="", max_length=1000)

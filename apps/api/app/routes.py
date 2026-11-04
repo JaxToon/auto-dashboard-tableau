@@ -14,7 +14,7 @@ from .db import User, get_db
 from .errors import AppError, Forbidden, NotFound, ValidationFailed
 from .identity import MOCK_USERS, SESSION_COOKIE, UserContext, create_session, rate_limiter, resolve_session, revoke_session
 from .runtime import Container
-from .schema import ApproveRequest, DraftPatch, InterpretRequest, PublishRequest, RecommendationDecision, SettingsPatch
+from .schema import ApproveRequest, DraftPatch, InterpretRequest, PreviewRequest, PublishRequest, RecommendationDecision, SettingsPatch
 from .tableau_artifact import format_value
 
 router = APIRouter()
@@ -184,8 +184,9 @@ def validate_dashboard(draft_id: str, db: Session = Depends(get_db), user: UserC
 
 
 @router.post("/api/v1/dashboards/{draft_id}/preview", tags=["dashboards"])
-def preview_dashboard(draft_id: str, db: Session = Depends(get_db), user: UserContext = Depends(current_user), c: Container = Depends(container)):
-    return dsvc.preview(db, c, dsvc.get_draft(db, c, draft_id, user), user)
+def preview_dashboard(draft_id: str, body: PreviewRequest | None = None, db: Session = Depends(get_db), user: UserContext = Depends(current_user),
+                      c: Container = Depends(container)):
+    return dsvc.preview(db, c, dsvc.get_draft(db, c, draft_id, user), user, body)
 
 
 @router.post("/api/v1/dashboards/{draft_id}/submit-review", tags=["dashboards"])

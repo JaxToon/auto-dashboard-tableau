@@ -83,6 +83,41 @@ def test_full_flow_preview_matches_fixture(clients):
     assert bars == EXPECTED["demo_sme_credit"]["total_outstanding_by_region_2025_12"]
 
 
+def test_view_filters_change_results_but_not_the_draft(clients):
+    did = build_ready_draft(clients)
+    biz = clients.as_user("demo.business")
+    pv = biz.post(f"/api/v1/dashboards/{did}/preview", json={
+        "filters": [{"field": "region", "op": "in", "values": ["Jakarta", "Sulawesi"]}, {"field": "product_segment", "op": "in", "values": ["Mikro"]}],
+        "time_range_start": "2025-07-01",
+    }).json()
+    assert pv["view"]["customized"] is True and pv["view"]["time_range"]["start"] == "2025-07-01"
+    titles = [r["title"] for r in pv["results"]]
+    assert any("Jul 2025 - Dec 2025" in t for t in titles) and not any("Jan 2025 - Dec 2025" in t for t in titles)
+    bars = {r["region"] for r in next(r for r in pv["results"] if r["viz_id"] == "comparison")["rows"]}
+    assert bars == {"Jakarta", "Sulawesi"}
+    kpi = next(r for r in pv["results"] if r["viz_id"] == "kpi_total_outstanding")["rows"][0]["total_outstanding"]
+    assert kpi < EXPECTED["demo_sme_credit"]["total_outstanding_by_region_2025_12"]["Jakarta"] + EXPECTED["demo_sme_credit"]["total_outstanding_by_region_2025_12"]["Sulawesi"]
+    d = biz.get(f"/api/v1/dashboards/{did}").json()
+    assert d["current_version"] == 1 and d["status"] == "Ready to Publish" and d["spec"]["filters"] == []
+    # the saved view is unchanged when no override is sent
+    assert biz.post(f"/api/v1/dashboards/{did}/preview", json={}).json()["view"]["customized"] is False
+
+
+def test_view_filters_are_validated(clients):
+    biz = clients.as_user("demo.business")
+    did = biz.post("/api/v1/dashboards/plan", json={"interpretation_id": ask(biz)["interpretation_id"]}).json()["id"]
+    for bad in (
+        {"filters": [{"field": "region", "op": "in", "values": ["Atlantis"]}]},
+        {"filters": [{"field": "outstanding_amount", "op": "in", "values": ["1"]}]},
+        {"time_range_start": "2025-12-01", "time_range_end": "2025-01-01"},
+        {"filters": [], "sql": "select 1"},
+    ):
+        r = biz.post(f"/api/v1/dashboards/{did}/preview", json=bad)
+        assert r.status_code == 422, bad
+    ok = biz.post(f"/api/v1/dashboards/{did}/preview", json={"filters": [{"field": "branch_code", "op": "in", "values": ["SYN-011"]}]})
+    assert ok.status_code == 200
+
+
 def test_edit_creates_version_and_invalidates_approval(clients):
     did = build_ready_draft(clients)
     biz = clients.as_user("demo.business")

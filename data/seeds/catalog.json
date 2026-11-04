@@ -79,6 +79,32 @@
             "cabang",
             "kantor cabang",
             "per cabang"
+          ],
+          "values": [
+            "SYN-011",
+            "SYN-012",
+            "SYN-013",
+            "SYN-021",
+            "SYN-022",
+            "SYN-023",
+            "SYN-031",
+            "SYN-032",
+            "SYN-033",
+            "SYN-041",
+            "SYN-042",
+            "SYN-043",
+            "SYN-051",
+            "SYN-052",
+            "SYN-053",
+            "SYN-061",
+            "SYN-062",
+            "SYN-063",
+            "SYN-071",
+            "SYN-072",
+            "SYN-073",
+            "SYN-081",
+            "SYN-082",
+            "SYN-083"
           ]
         },
         {

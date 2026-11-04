@@ -7,6 +7,7 @@ import { formatPeriod, formatTime } from "@/lib/format";
 import { can, useSession } from "@/components/Shell";
 import { DashboardPreview, VizResult } from "@/components/Charts";
 import { Button, ErrorNote, StatusPill } from "@/components/ui";
+import { FilterBar, FilterField, ViewState } from "@/components/FilterBar";
 
 type Viz = { id: string; type: string; title: string; metric_ids: string[]; dimension_ids: string[] };
 type Spec = {
@@ -47,6 +48,7 @@ type Draft = {
   interpretation_summary: string;
 };
 type Preview = {
+  view: { customized: boolean; filters: { field: string; values: string[] }[]; time_range: { start: string; end: string } };
   results: VizResult[];
   result_validation: { valid: boolean; warnings: string[] };
   provenance: {
@@ -85,12 +87,21 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [comment, setComment] = useState("");
-  const [form, setForm] = useState<{ title: string; description: string; layout: string; start: string; end: string; filters: Record<string, string[]>; charts: Record<string, string>; remove: string[] }>();
+  const [form, setForm] = useState<{ title: string; description: string; layout: string; charts: Record<string, string>; remove: string[] }>();
+  const [view, setView] = useState<ViewState | null>(null);
+  const [viewLoading, setViewLoading] = useState(false);
+
+  const savedView = (s: Spec): ViewState => ({
+    filters: Object.fromEntries(s.filters.map((f) => [f.field, f.values])),
+    start: s.time_range.start,
+    end: s.time_range.end,
+  });
 
   const load = useCallback(async () => {
     try {
       const d = await api<Draft>(`/api/v1/dashboards/${id}`);
       setDraft(d);
+      setView(savedView(d.spec));
       const ds = await api<{ datasets: { id: string; fields: Field[]; freshness: { earliest_period: string; latest_period: string } }[] }>("/api/v1/catalog/datasets");
       const meta = ds.datasets.find((x) => x.id === d.spec.dataset_id);
       if (meta) {
@@ -106,6 +117,34 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
   useEffect(() => {
     load();
   }, [load]);
+
+  const viewBody = (v: ViewState) => ({
+    filters: Object.entries(v.filters).filter(([, vals]) => vals.length).map(([field, values]) => ({ field, op: "in", values })),
+    time_range_start: v.start,
+    time_range_end: v.end,
+  });
+
+  async function changeView(v: ViewState) {
+    setView(v);
+    setViewLoading(true);
+    setError(null);
+    try {
+      setPreview(await api<Preview>(`/api/v1/dashboards/${id}/preview`, { body: viewBody(v) }));
+    } catch (e) {
+      setError(e);
+    } finally {
+      setViewLoading(false);
+    }
+  }
+
+  async function saveView() {
+    if (!view) return;
+    const b = viewBody(view);
+    await act("save-view", async () => {
+      await api(`/api/v1/dashboards/${id}`, { method: "PATCH", body: b });
+      await api(`/api/v1/dashboards/${id}/validate`, { body: {} });
+    });
+  }
 
   async function act(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
@@ -128,9 +167,6 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
       title: s.title,
       description: s.description,
       layout: s.layout,
-      start: s.time_range.start,
-      end: s.time_range.end,
-      filters: Object.fromEntries(s.filters.map((f) => [f.field, f.values])),
       charts: Object.fromEntries(s.visualizations.map((v) => [v.id, v.type])),
       remove: [],
     });
@@ -144,10 +180,6 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
     if (form.title !== s.title) patch.title = form.title;
     if (form.description !== s.description) patch.description = form.description;
     if (form.layout !== s.layout) patch.layout = form.layout;
-    if (form.start !== s.time_range.start) patch.time_range_start = form.start;
-    if (form.end !== s.time_range.end) patch.time_range_end = form.end;
-    const filters = Object.entries(form.filters).filter(([, v]) => v.length).map(([field, values]) => ({ field, op: "in", values }));
-    if (JSON.stringify(filters) !== JSON.stringify(s.filters.map((f) => ({ field: f.field, op: f.op, values: f.values })))) patch.filters = filters;
     const charts = Object.fromEntries(Object.entries(form.charts).filter(([vid, t]) => s.visualizations.find((v) => v.id === vid)?.type !== t));
     if (Object.keys(charts).length) patch.chart_types = charts;
     if (form.remove.length) patch.remove_visualizations = form.remove;
@@ -173,7 +205,9 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
     { label: draft.review_required ? "Approved by BA reviewer" : "Review not required", done: !draft.review_required || approved },
     { label: "Published to Tableau", done: draft.status === "Published" && !!draft.verified_url },
   ];
-  const filterable = fields.filter((f) => f.role === "dimension" && f.values?.length);
+  const filterable: FilterField[] = fields.filter((f) => f.role === "dimension" && f.values?.length).map((f) => ({ id: f.id, name: f.name, values: f.values! }));
+  const shownRange = preview?.view.time_range ?? draft.spec.time_range;
+  const shownFilters = preview?.view.filters ?? draft.spec.filters;
 
   return (
     <div className="max-w-[1400px]">
@@ -201,10 +235,23 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
 
       <div className="mt-6 grid gap-8 xl:grid-cols-[minmax(0,1fr)_380px]">
         <section aria-label="Dashboard preview" className="min-w-0">
+          {view && coverage.length > 0 && (
+            <FilterBar
+              fields={filterable}
+              months={coverage}
+              view={view}
+              customized={!!preview?.view.customized}
+              loading={viewLoading}
+              canSave={isOwner && !["Archived", "Publishing"].includes(draft.status) && !busy}
+              onChange={changeView}
+              onReset={() => changeView(savedView(draft.spec))}
+              onSave={saveView}
+            />
+          )}
           <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2 text-sm text-ink-2">
             <span>
-              {draft.dataset_name}, {formatPeriod(draft.spec.time_range.start)} – {formatPeriod(draft.spec.time_range.end)}
-              {draft.spec.filters.length > 0 && <>, filtered to {draft.spec.filters.map((f) => f.values.join(", ")).join("; ")}</>}
+              {draft.dataset_name}, {formatPeriod(shownRange.start)} – {formatPeriod(shownRange.end)}
+              {shownFilters.length > 0 && <>, filtered to {shownFilters.map((f) => f.values.join(", ")).join("; ")}</>}
             </span>
             {preview && <span className="text-xs text-ink-3">Data up to {formatPeriod(preview.provenance.freshness.latest_period)} (synthetic snapshot)</span>}
           </div>
@@ -348,43 +395,18 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
                 <h2 className="font-semibold">Edit draft</h2>
                 {!editing && <Button variant="quiet" onClick={startEdit}>Edit</Button>}
               </div>
-              {!editing && <p className="mt-1 text-sm text-ink-2">Change the title, period, filters, chart types and layout. KPI formulas are protected. Each save creates a new version that needs validation and review again.</p>}
+              {!editing && <p className="mt-1 text-sm text-ink-2">Change the title, description, chart types and layout. Set the period and filters with the filter bar above the preview. KPI formulas are protected. Each save creates a new version that needs validation and review again.</p>}
               {editing && form && (
                 <div className="mt-3 space-y-3 text-sm">
                   <label className="block"><span className="text-ink-2">Title</span>
                     <input value={form.title} maxLength={120} onChange={(e) => setForm({ ...form, title: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5" /></label>
                   <label className="block"><span className="text-ink-2">Description</span>
                     <textarea value={form.description} maxLength={500} rows={2} onChange={(e) => setForm({ ...form, description: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5" /></label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <label><span className="text-ink-2">From</span>
-                      <select value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5">
-                        {coverage.map((m) => <option key={m} value={m}>{formatPeriod(m)}</option>)}
-                      </select></label>
-                    <label><span className="text-ink-2">To</span>
-                      <select value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5">
-                        {coverage.map((m) => <option key={m} value={m}>{formatPeriod(m)}</option>)}
-                      </select></label>
-                  </div>
                   <label className="block"><span className="text-ink-2">Layout</span>
                     <select value={form.layout} onChange={(e) => setForm({ ...form, layout: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5">
                       <option value="executive_overview">Executive overview (two columns)</option>
                       <option value="detailed_grid">Detailed (one column)</option>
                     </select></label>
-                  {filterable.map((f) => (
-                    <fieldset key={f.id}>
-                      <legend className="text-ink-2">Filter: {f.name} <span className="text-ink-3">(none selected means all)</span></legend>
-                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-                        {f.values!.map((v) => {
-                          const sel = form.filters[f.id] ?? [];
-                          return (
-                            <label key={v} className="flex items-center gap-1">
-                              <input type="checkbox" checked={sel.includes(v)} onChange={(e) => setForm({ ...form, filters: { ...form.filters, [f.id]: e.target.checked ? [...sel, v] : sel.filter((x) => x !== v) } })} />{v}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </fieldset>
-                  ))}
                   <fieldset>
                     <legend className="text-ink-2">Charts</legend>
                     <ul className="mt-1 space-y-1.5">
