@@ -1,0 +1,22 @@
+# local state
+var/
+.env
+*.db
+# python
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+# node
+node_modules/
+.next/
+*.tsbuildinfo
+# tooling
+.playwright-cli/
+
+# private documents kept at the repo root
+/*_PRD_*.md
+/*_PRD_*.docx
+/*_PRD_*.pdf
+# local Claude Code settings
+.claude/settings.local.json

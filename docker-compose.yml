@@ -1,0 +1,36 @@
+# Local PoC runtime. Synthetic data only. Do not point this at production systems.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: proactive_analytics
+      POSTGRES_USER: pbac
+      POSTGRES_PASSWORD: pbac-local-only
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pbac -d proactive_analytics"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    env_file: [{ path: .env, required: false }]
+    environment:
+      DATABASE_URL: postgresql+psycopg://pbac:pbac-local-only@db:5432/proactive_analytics
+      DATA_DIR: /srv/data
+      ARTIFACT_DIR: /srv/var/artifacts
+      CORS_ORIGINS: ""
+    depends_on: { db: { condition: service_healthy } }
+    ports: ["127.0.0.1:8000:8000"]
+
+  web:
+    build:
+      context: apps/web
+      args: { API_INTERNAL_URL: "http://api:8000" }
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    depends_on: [api]
+    ports: ["127.0.0.1:3000:3000"]
+
+volumes:
+  pgdata:

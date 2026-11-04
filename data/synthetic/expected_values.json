@@ -1,0 +1,34 @@
+{
+  "_note": "SYNTHETIC expected values computed with plain sums in the generator, independent of the app engine.",
+  "demo_sme_credit": {
+    "total_outstanding_2025_12": 11947952000000,
+    "total_outstanding_by_region_2025_12": {
+      "Bali & Nusa Tenggara": 769505000000,
+      "Jakarta": 2153408000000,
+      "Jawa Barat": 2043710000000,
+      "Jawa Tengah": 1336790000000,
+      "Jawa Timur": 2018620000000,
+      "Kalimantan": 1023132000000,
+      "Sulawesi": 1127385000000,
+      "Sumatera": 1475402000000
+    },
+    "total_outstanding_by_month_2025": {
+      "2025-01-01": 10645718000000,
+      "2025-02-01": 10814804000000,
+      "2025-03-01": 11006294000000,
+      "2025-04-01": 11215340000000,
+      "2025-05-01": 11389794000000,
+      "2025-06-01": 11543378000000,
+      "2025-07-01": 11649310000000,
+      "2025-08-01": 11702235000000,
+      "2025-09-01": 11761622000000,
+      "2025-10-01": 11806104000000,
+      "2025-11-01": 11857783000000,
+      "2025-12-01": 11947952000000
+    },
+    "total_disbursement_2025": 6194583000000,
+    "target_achievement_pct_2025_12": 96.1882,
+    "outstanding_growth_pct_2025_vs_2024_12": 13.6146,
+    "row_count": 1728
+  }
+}

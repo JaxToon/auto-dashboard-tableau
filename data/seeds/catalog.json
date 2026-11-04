@@ -1,0 +1,605 @@
+{
+  "catalog_version": "2026.11.0",
+  "_note": "PoC semantic catalog. All datasets are SYNTHETIC. KPI definitions are PoC placeholders pending Business Analytics owner approval; they are NOT official bank definitions.",
+  "datasets": [
+    {
+      "id": "demo_sme_credit",
+      "name": "SME Credit Portfolio (Synthetic)",
+      "description": "Monthly synthetic SME credit portfolio by region, branch and product segment. Not actual bank performance.",
+      "domain": "Credit",
+      "owner": "Data Steward (PoC placeholder - to be confirmed)",
+      "classification": "SYNTHETIC / non-confidential",
+      "permitted_use": "PoC demonstration and testing only.",
+      "source_adapter": "synthetic",
+      "source_file": "demo_sme_credit.csv",
+      "grain": "month x branch x product segment",
+      "refresh": "Static synthetic snapshot",
+      "date_field": "report_month",
+      "calendar": "Gregorian month-end reporting, Asia/Jakarta",
+      "allowed_roles": [
+        "business_user",
+        "ba_reviewer",
+        "data_steward"
+      ],
+      "status": "approved_for_poc",
+      "version": "1.0.0",
+      "synonyms": [
+        "kredit",
+        "credit",
+        "sme",
+        "umkm",
+        "ukm",
+        "loan",
+        "pinjaman",
+        "pembiayaan",
+        "baki debet"
+      ],
+      "fields": [
+        {
+          "id": "report_month",
+          "name": "Reporting month",
+          "type": "date",
+          "role": "time",
+          "synonyms": []
+        },
+        {
+          "id": "region",
+          "name": "Region",
+          "type": "string",
+          "role": "dimension",
+          "synonyms": [
+            "region",
+            "regions",
+            "wilayah",
+            "regional",
+            "antar-region",
+            "antar region",
+            "per region",
+            "daerah"
+          ],
+          "values": [
+            "Jakarta",
+            "Jawa Barat",
+            "Jawa Tengah",
+            "Jawa Timur",
+            "Sumatera",
+            "Kalimantan",
+            "Sulawesi",
+            "Bali & Nusa Tenggara"
+          ]
+        },
+        {
+          "id": "branch_code",
+          "name": "Branch (synthetic code)",
+          "type": "string",
+          "role": "dimension",
+          "synonyms": [
+            "branch",
+            "branches",
+            "cabang",
+            "kantor cabang",
+            "per cabang"
+          ]
+        },
+        {
+          "id": "product_segment",
+          "name": "Product segment",
+          "type": "string",
+          "role": "dimension",
+          "synonyms": [
+            "segment",
+            "segments",
+            "segmen",
+            "product segment",
+            "segmen produk",
+            "per segmen"
+          ],
+          "values": [
+            "Mikro",
+            "Kecil",
+            "Menengah"
+          ]
+        },
+        {
+          "id": "outstanding_amount",
+          "name": "Outstanding amount",
+          "type": "decimal",
+          "role": "measure",
+          "unit": "IDR",
+          "time_aggregation": "period_end"
+        },
+        {
+          "id": "disbursement_amount",
+          "name": "Disbursement amount",
+          "type": "decimal",
+          "role": "measure",
+          "unit": "IDR",
+          "time_aggregation": "sum"
+        },
+        {
+          "id": "target_amount",
+          "name": "Outstanding target",
+          "type": "decimal",
+          "role": "measure",
+          "unit": "IDR",
+          "time_aggregation": "period_end"
+        },
+        {
+          "id": "account_count",
+          "name": "Account count (aggregate)",
+          "type": "integer",
+          "role": "measure",
+          "unit": "accounts",
+          "time_aggregation": "period_end"
+        }
+      ],
+      "example_prompts": [
+        "Show monthly SME credit outstanding by region for 2025.",
+        "Tampilkan tren pertumbuhan kredit SME per bulan selama 12 bulan terakhir, bandingkan antar-region, dan soroti tiga region dengan pertumbuhan tertinggi.",
+        "Compare actual versus target by month for 2025.",
+        "Top 5 branches by SME credit disbursement in the last 6 months.",
+        "Berapa total outstanding kredit SME Desember 2025?"
+      ]
+    },
+    {
+      "id": "demo_deposit_funding",
+      "name": "Deposit Funding (Synthetic)",
+      "description": "Monthly synthetic third-party funds by region and product type. Restricted to analyst roles in this PoC to demonstrate dataset entitlements.",
+      "domain": "Funding",
+      "owner": "Data Steward (PoC placeholder - to be confirmed)",
+      "classification": "SYNTHETIC / non-confidential (restricted in PoC for entitlement demo)",
+      "permitted_use": "PoC demonstration and testing only.",
+      "source_adapter": "synthetic",
+      "source_file": "demo_deposit_funding.csv",
+      "grain": "month x region x product type",
+      "refresh": "Static synthetic snapshot",
+      "date_field": "report_month",
+      "calendar": "Gregorian month-end reporting, Asia/Jakarta",
+      "allowed_roles": [
+        "ba_reviewer",
+        "data_steward"
+      ],
+      "status": "approved_for_poc",
+      "version": "1.0.0",
+      "synonyms": [
+        "deposit",
+        "deposits",
+        "dpk",
+        "dana pihak ketiga",
+        "simpanan",
+        "funding",
+        "pendanaan"
+      ],
+      "fields": [
+        {
+          "id": "report_month",
+          "name": "Reporting month",
+          "type": "date",
+          "role": "time",
+          "synonyms": []
+        },
+        {
+          "id": "region",
+          "name": "Region",
+          "type": "string",
+          "role": "dimension",
+          "synonyms": [
+            "region",
+            "regions",
+            "wilayah",
+            "regional",
+            "antar-region",
+            "antar region",
+            "per region",
+            "daerah"
+          ],
+          "values": [
+            "Jakarta",
+            "Jawa Barat",
+            "Jawa Tengah",
+            "Jawa Timur",
+            "Sumatera",
+            "Kalimantan",
+            "Sulawesi",
+            "Bali & Nusa Tenggara"
+          ]
+        },
+        {
+          "id": "product_type",
+          "name": "Deposit product",
+          "type": "string",
+          "role": "dimension",
+          "synonyms": [
+            "product",
+            "products",
+            "produk",
+            "jenis produk",
+            "product type"
+          ],
+          "values": [
+            "Giro",
+            "Tabungan",
+            "Deposito"
+          ]
+        },
+        {
+          "id": "balance_amount",
+          "name": "Balance amount",
+          "type": "decimal",
+          "role": "measure",
+          "unit": "IDR",
+          "time_aggregation": "period_end"
+        },
+        {
+          "id": "account_count",
+          "name": "Account count (aggregate)",
+          "type": "integer",
+          "role": "measure",
+          "unit": "accounts",
+          "time_aggregation": "period_end"
+        }
+      ],
+      "example_prompts": [
+        "Compare deposit growth across regions over the last 12 months.",
+        "Show monthly deposit balance by product for 2025."
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "id": "total_outstanding",
+      "dataset_id": "demo_sme_credit",
+      "name": "Total Credit Outstanding",
+      "definition": "Sum of synthetic SME outstanding credit balance at period end.",
+      "formula": {
+        "type": "sum",
+        "field": "outstanding_amount"
+      },
+      "formula_display": "SUM(outstanding_amount) at the last month of each period",
+      "calculation_notes": "Balance (stock) metric: never summed across months. A period or range takes the value of its last available month.",
+      "unit": "IDR",
+      "format": "currency",
+      "grain": "month",
+      "allowed_dimensions": [
+        "report_month",
+        "region",
+        "branch_code",
+        "product_segment"
+      ],
+      "null_handling": "Null amounts are excluded and reported as a warning.",
+      "comparison_rules": "Compare period-end balances only.",
+      "synonyms": [
+        "outstanding",
+        "kredit outstanding",
+        "credit outstanding",
+        "baki debet",
+        "saldo kredit",
+        "posisi kredit",
+        "portfolio",
+        "portofolio"
+      ],
+      "related_metrics": [
+        "outstanding_growth_pct",
+        "target_achievement_pct"
+      ],
+      "owner": "Business Analytics (PoC placeholder - to be confirmed)",
+      "version": "1.0.0",
+      "effective_date": "2026-11-01",
+      "status": "approved_for_poc"
+    },
+    {
+      "id": "outstanding_growth_pct",
+      "dataset_id": "demo_sme_credit",
+      "name": "Outstanding Growth (%)",
+      "definition": "Percentage change in period-end outstanding versus the previous period.",
+      "formula": {
+        "type": "growth",
+        "field": "outstanding_amount"
+      },
+      "formula_display": "(Outstanding[period] / Outstanding[previous period] - 1) x 100",
+      "calculation_notes": "Grouped by time: versus the previous period. Without a time dimension: last month of the range versus the month immediately before the range starts. Undefined (blank) when the previous value is missing or zero.",
+      "unit": "%",
+      "format": "percent",
+      "grain": "month",
+      "allowed_dimensions": [
+        "report_month",
+        "region",
+        "branch_code",
+        "product_segment"
+      ],
+      "null_handling": "Blank when the comparison base is missing or zero; reported as a warning.",
+      "comparison_rules": "Period-over-period on period-end balances.",
+      "synonyms": [
+        "growth",
+        "pertumbuhan",
+        "tumbuh",
+        "pertumbuhan kredit",
+        "credit growth",
+        "growth rate",
+        "kenaikan"
+      ],
+      "related_metrics": [
+        "total_outstanding"
+      ],
+      "owner": "Business Analytics (PoC placeholder - to be confirmed)",
+      "version": "1.0.0",
+      "effective_date": "2026-11-01",
+      "status": "approved_for_poc"
+    },
+    {
+      "id": "target_achievement_pct",
+      "dataset_id": "demo_sme_credit",
+      "name": "Target Achievement (%)",
+      "definition": "Period-end outstanding as a percentage of period-end outstanding target.",
+      "formula": {
+        "type": "ratio",
+        "numerator": "outstanding_amount",
+        "denominator": "target_amount",
+        "scale": 100
+      },
+      "formula_display": "SUM(outstanding_amount) / SUM(target_amount) x 100, at period end",
+      "calculation_notes": "Numerator and denominator are both summed at period end before dividing. Blank when target is zero.",
+      "unit": "%",
+      "format": "percent",
+      "grain": "month",
+      "allowed_dimensions": [
+        "report_month",
+        "region",
+        "branch_code",
+        "product_segment"
+      ],
+      "null_handling": "Blank when target is zero or missing; reported as a warning.",
+      "comparison_rules": "Actual versus target at the same period end.",
+      "synonyms": [
+        "target achievement",
+        "pencapaian target",
+        "capaian target",
+        "achievement",
+        "pencapaian",
+        "realisasi",
+        "actual versus target",
+        "actual vs target",
+        "realisasi vs target",
+        "aktual vs target",
+        "versus target",
+        "vs target",
+        "terhadap target"
+      ],
+      "related_metrics": [
+        "total_outstanding"
+      ],
+      "owner": "Business Analytics (PoC placeholder - to be confirmed)",
+      "version": "1.0.0",
+      "effective_date": "2026-11-01",
+      "status": "approved_for_poc"
+    },
+    {
+      "id": "total_disbursement",
+      "dataset_id": "demo_sme_credit",
+      "name": "Total Disbursement",
+      "definition": "Sum of synthetic new credit disbursed during the period.",
+      "formula": {
+        "type": "sum",
+        "field": "disbursement_amount"
+      },
+      "formula_display": "SUM(disbursement_amount) over all months in the period",
+      "calculation_notes": "Flow metric: summed across months.",
+      "unit": "IDR",
+      "format": "currency",
+      "grain": "month",
+      "allowed_dimensions": [
+        "report_month",
+        "region",
+        "branch_code",
+        "product_segment"
+      ],
+      "null_handling": "Null amounts are excluded and reported as a warning.",
+      "comparison_rules": "Compare equal-length periods.",
+      "synonyms": [
+        "disbursement",
+        "penyaluran",
+        "pencairan",
+        "realisasi kredit baru",
+        "kredit baru",
+        "new loans"
+      ],
+      "related_metrics": [
+        "total_outstanding"
+      ],
+      "owner": "Business Analytics (PoC placeholder - to be confirmed)",
+      "version": "1.0.0",
+      "effective_date": "2026-11-01",
+      "status": "approved_for_poc"
+    },
+    {
+      "id": "total_accounts",
+      "dataset_id": "demo_sme_credit",
+      "name": "Credit Accounts",
+      "definition": "Synthetic aggregate number of active credit accounts at period end.",
+      "formula": {
+        "type": "sum",
+        "field": "account_count"
+      },
+      "formula_display": "SUM(account_count) at the last month of each period",
+      "calculation_notes": "Stock metric: period-end value, never summed across months.",
+      "unit": "accounts",
+      "format": "number",
+      "grain": "month",
+      "allowed_dimensions": [
+        "report_month",
+        "region",
+        "branch_code",
+        "product_segment"
+      ],
+      "null_handling": "Null counts are excluded and reported as a warning.",
+      "comparison_rules": "Compare period-end counts.",
+      "synonyms": [
+        "accounts",
+        "jumlah rekening",
+        "rekening",
+        "jumlah debitur",
+        "debitur",
+        "number of accounts",
+        "account count"
+      ],
+      "related_metrics": [
+        "total_outstanding"
+      ],
+      "owner": "Business Analytics (PoC placeholder - to be confirmed)",
+      "version": "1.0.0",
+      "effective_date": "2026-11-01",
+      "status": "approved_for_poc"
+    },
+    {
+      "id": "total_deposit_balance",
+      "dataset_id": "demo_deposit_funding",
+      "name": "Total Deposit Balance",
+      "definition": "Sum of synthetic deposit balances at period end.",
+      "formula": {
+        "type": "sum",
+        "field": "balance_amount"
+      },
+      "formula_display": "SUM(balance_amount) at the last month of each period",
+      "calculation_notes": "Balance (stock) metric: never summed across months.",
+      "unit": "IDR",
+      "format": "currency",
+      "grain": "month",
+      "allowed_dimensions": [
+        "report_month",
+        "region",
+        "product_type"
+      ],
+      "null_handling": "Null amounts are excluded and reported as a warning.",
+      "comparison_rules": "Compare period-end balances only.",
+      "synonyms": [
+        "deposit balance",
+        "saldo dpk",
+        "dpk",
+        "deposit",
+        "deposits",
+        "simpanan",
+        "dana pihak ketiga",
+        "saldo simpanan"
+      ],
+      "related_metrics": [
+        "deposit_growth_pct"
+      ],
+      "owner": "Business Analytics (PoC placeholder - to be confirmed)",
+      "version": "1.0.0",
+      "effective_date": "2026-11-01",
+      "status": "approved_for_poc"
+    },
+    {
+      "id": "deposit_growth_pct",
+      "dataset_id": "demo_deposit_funding",
+      "name": "Deposit Growth (%)",
+      "definition": "Percentage change in period-end deposit balance versus the previous period.",
+      "formula": {
+        "type": "growth",
+        "field": "balance_amount"
+      },
+      "formula_display": "(Balance[period] / Balance[previous period] - 1) x 100",
+      "calculation_notes": "Grouped by time: versus the previous period. Without a time dimension: last month of the range versus the month immediately before the range starts.",
+      "unit": "%",
+      "format": "percent",
+      "grain": "month",
+      "allowed_dimensions": [
+        "report_month",
+        "region",
+        "product_type"
+      ],
+      "null_handling": "Blank when the comparison base is missing or zero; reported as a warning.",
+      "comparison_rules": "Period-over-period on period-end balances.",
+      "synonyms": [
+        "deposit growth",
+        "pertumbuhan dpk",
+        "pertumbuhan simpanan",
+        "growth",
+        "pertumbuhan",
+        "kenaikan"
+      ],
+      "related_metrics": [
+        "total_deposit_balance"
+      ],
+      "owner": "Business Analytics (PoC placeholder - to be confirmed)",
+      "version": "1.0.0",
+      "effective_date": "2026-11-01",
+      "status": "approved_for_poc"
+    }
+  ],
+  "known_unsupported_terms": [
+    {
+      "terms": [
+        "npl",
+        "non performing",
+        "kredit bermasalah",
+        "kolektibilitas"
+      ],
+      "label": "NPL / credit quality"
+    },
+    {
+      "terms": [
+        "laba",
+        "profit",
+        "keuntungan",
+        "income",
+        "pendapatan"
+      ],
+      "label": "Profit / income"
+    },
+    {
+      "terms": [
+        "nim",
+        "net interest margin",
+        "margin bunga"
+      ],
+      "label": "Net interest margin"
+    },
+    {
+      "terms": [
+        "ckpn",
+        "impairment",
+        "pencadangan"
+      ],
+      "label": "Impairment / provisioning"
+    },
+    {
+      "terms": [
+        "transaction volume",
+        "volume transaksi",
+        "jumlah transaksi",
+        "transaksi"
+      ],
+      "label": "Transaction volume"
+    },
+    {
+      "terms": [
+        "nasabah",
+        "customer name",
+        "nama debitur",
+        "nomor rekening",
+        "account number",
+        "nik"
+      ],
+      "label": "Customer-level or identifying data"
+    }
+  ],
+  "ambiguous_terms": [
+    {
+      "terms": [
+        "kinerja",
+        "performa",
+        "performance",
+        "kesehatan",
+        "health"
+      ],
+      "dataset_id": "demo_sme_credit",
+      "candidates": [
+        "total_outstanding",
+        "outstanding_growth_pct",
+        "target_achievement_pct"
+      ],
+      "question": "\"Performance\" can mean several approved KPIs. Which one should the dashboard use?"
+    }
+  ]
+}
