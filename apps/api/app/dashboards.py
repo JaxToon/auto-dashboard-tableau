@@ -151,6 +151,8 @@ def publish_blockers(draft: DashboardDraft, c: Container) -> list[str]:
         out.append("Dashboard publishing is disabled (FEATURE_DASHBOARD_PUBLISH).")
     if c.publisher.mode == "not_configured":
         out.append("Tableau integration not configured.")
+    elif c.publisher.mode == "rest" and not c.settings.tableau_project_id:
+        out.append("Choose a target Tableau project: set TABLEAU_PROJECT_ID (Admin, Test connection lists the project IDs).")
     return out
 
 

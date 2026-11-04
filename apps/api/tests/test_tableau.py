@@ -91,6 +91,18 @@ def test_factory_defaults_to_not_configured():
     assert isinstance(get_publisher(settings(tableau_mode="mock")), MockTableauPublisher)
 
 
+def test_credentials_without_project_can_connect_but_not_publish():
+    s = settings(tableau_project_id="")
+    assert s.tableau_credentials_configured and not s.tableau_configured
+    pub = get_publisher(s)
+    assert isinstance(pub, RestTableauPublisher)
+    pub.tsc = FakeTableau()
+    conn = pub.test_connection()
+    assert conn["signed_in"] and not conn["ok"] and conn["project_count"] == 2
+    assert "TABLEAU_PROJECT_ID" in conn["message"]
+    assert {p["id"] for p in pub.list_projects()} == {"proj-poc", "other"}
+
+
 def test_not_configured_never_fakes_success(artifact, tmp_path):
     p = NotConfiguredPublisher()
     assert p.test_connection()["ok"] is False

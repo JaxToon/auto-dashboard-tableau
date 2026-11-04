@@ -11,7 +11,7 @@ Ask a business question in Bahasa Indonesia or English, get a validated dashboar
 | Question → intent → dashboard spec → validation → preview | **Implemented and tested.** Rules-based planner; no external AI calls. |
 | Synthetic dataset, semantic catalog, 7 KPI definitions (5 credit, 2 deposit) | **Implemented.** Expected values checked independently. |
 | Draft editing, versioning, BA review gate, audit trail, kill switches | **Implemented and tested.** |
-| Tableau REST publishing + read-back verification (TSC, PAT auth) | **Implemented, unit-tested against a fake Tableau client. Not yet run against a real Tableau site.** |
+| Tableau REST publishing + read-back verification (TSC, PAT auth) | **Implemented and unit-tested. Sign-in, project listing and project validation verified against a real Tableau Cloud developer site (2026.3); a real publish has not been run yet.** |
 | Generated `.twbx` workbook | **Deterministic and structurally tested. Not yet opened in Tableau Desktop/Server.** |
 | Mandatory E2E (`apps/api/tests_e2e`) | **Not yet passed.** It fails by design until real Tableau credentials are configured. |
 | Recurring-question recommendations (P1) | **Implemented on SIMULATED events**, behind a feature flag. |

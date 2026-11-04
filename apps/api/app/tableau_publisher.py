@@ -166,16 +166,24 @@ class RestTableauPublisher(TableauPublisher):
                 log.info("tableau server info unavailable: %s", exc.__class__.__name__)
             projects = {p.id: p.name for p in self._projects(server)}
             target = self.s.tableau_project_id
+            if not target:
+                message = "Connected. Choose a target project: set TABLEAU_PROJECT_ID to one of the listed project IDs."
+            elif target in projects:
+                message = "Connected; target project validated."
+            else:
+                message = "Connected, but the configured target project was not found or is not visible to the publisher identity."
             return {
                 "ok": target in projects,
+                "signed_in": True,
                 "mode": self.mode,
                 "server_url": self.s.tableau_server_url,
                 "site": self.s.tableau_site_content_url or "(default)",
                 **info,
-                "target_project_id": target,
+                "target_project_id": target or None,
                 "target_project_found": target in projects,
                 "target_project_name": projects.get(target),
-                "message": "Connected; target project validated." if target in projects else "Connected, but the configured target project was not found or is not visible to the publisher identity.",
+                "project_count": len(projects),
+                "message": message,
             }
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "mode": self.mode, "message": _tableau_error(exc, "connection test").message}
@@ -269,7 +277,7 @@ class RestTableauPublisher(TableauPublisher):
 
 
 def get_publisher(settings: Settings) -> TableauPublisher:
-    if not settings.tableau_configured:
+    if not settings.tableau_credentials_configured:
         return NotConfiguredPublisher()
     if settings.tableau_mode == "mock":
         return MockTableauPublisher()

@@ -144,6 +144,14 @@ def test_publish_blocked_when_tableau_not_configured(make_app):
     assert d["status"] == "Ready to Publish" and d["verified_url"] is None
 
 
+def test_publish_blocked_until_project_chosen(make_app):
+    _, clients = make_app(**(REAL_LIKE | {"tableau_project_id": ""}))
+    did = build_ready_draft(clients)
+    r = clients.as_user("demo.business").post(f"/api/v1/dashboards/{did}/publish", json={"confirm": True})
+    assert r.status_code == 409
+    assert any("TABLEAU_PROJECT_ID" in b for b in r.json()["error"]["details"]["blockers"])
+
+
 def test_publish_requires_confirmation(make_app):
     _, clients = make_app(feature_dashboard_publish=True, tableau_enabled=True, tableau_mode="mock")
     did = build_ready_draft(clients)

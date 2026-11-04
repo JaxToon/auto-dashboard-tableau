@@ -81,16 +81,16 @@ class Settings(BaseSettings):
         return ids
 
     @property
-    def tableau_configured(self) -> bool:
+    def tableau_credentials_configured(self) -> bool:
+        """Enough to sign in, test the connection and list projects (no target project yet)."""
         if self.tableau_mode == "mock":
             return self.tableau_enabled
-        return bool(
-            self.tableau_enabled
-            and self.tableau_server_url
-            and self.tableau_project_id
-            and self.tableau_pat_name
-            and self.tableau_pat_secret.get_secret_value()
-        )
+        return bool(self.tableau_enabled and self.tableau_server_url and self.tableau_pat_name and self.tableau_pat_secret.get_secret_value())
+
+    @property
+    def tableau_configured(self) -> bool:
+        """Ready to publish: credentials plus a target project."""
+        return self.tableau_credentials_configured and (self.tableau_mode == "mock" or bool(self.tableau_project_id))
 
 
 @lru_cache

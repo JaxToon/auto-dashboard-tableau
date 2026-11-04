@@ -84,7 +84,7 @@ export default function AdminPage() {
           <div><dt className="text-ink-3">Authentication</dt><dd>{t.auth_method}: token name {t.pat_name_set ? "set" : "missing"}, secret {t.pat_secret_set ? "set" : "missing"}</dd></div>
         </dl>
         {test && (
-          <div className={`mt-4 rounded-md px-4 py-3 text-sm ${test.ok ? "bg-ok-tint text-ok" : "bg-danger-tint text-danger"}`}>
+          <div className={`mt-4 rounded-md px-4 py-3 text-sm ${test.ok ? "bg-ok-tint text-ok" : test.signed_in ? "bg-warn-tint text-warn" : "bg-danger-tint text-danger"}`}>
             <div className="font-semibold">{String(test.message)}</div>
             {"product_version" in test && test.product_version ? <div>Tableau {String(test.product_version)}, REST API {String(test.rest_api_version)}</div> : null}
           </div>
