@@ -49,6 +49,7 @@ type Draft = {
 };
 type Preview = {
   view: { customized: boolean; filters: { field: string; values: string[] }[]; time_range: { start: string; end: string } };
+  insights: string[];
   results: VizResult[];
   result_validation: { valid: boolean; warnings: string[] };
   provenance: {
@@ -255,6 +256,17 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
             </span>
             {preview && <span className="text-xs text-ink-3">Data up to {formatPeriod(preview.provenance.freshness.latest_period)} (synthetic snapshot)</span>}
           </div>
+          {preview && preview.insights.length > 0 && (
+            <section aria-label="Key findings" className="mb-5 border-l-4 border-teal bg-surface px-5 py-4 rounded-r-lg">
+              <h2 className="font-semibold">Key findings</h2>
+              <ul className="mt-2 space-y-1.5 text-[15px] leading-snug">
+                {preview.insights.map((f) => (
+                  <li key={f} className="flex gap-2"><span aria-hidden className="text-teal">•</span><span>{f}</span></li>
+                ))}
+              </ul>
+              <p className="mt-2 text-xs text-ink-3">Calculated from the validated results shown below, using the approved KPI definitions.</p>
+            </section>
+          )}
           {preview ? <DashboardPreview results={preview.results} layout={draft.spec.layout} /> : <p className="text-ink-3">Building preview…</p>}
 
           {preview && (

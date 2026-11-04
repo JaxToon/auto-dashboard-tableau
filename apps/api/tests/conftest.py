@@ -124,8 +124,12 @@ class FakeTableau:
             twb = next(n for n in z.namelist() if n.endswith(".twb"))
             root = ET.fromstring(z.read(twb))
             csv_text = z.read("Data/results/results.csv").decode()
+        # Like real Tableau, hidden worksheets are not published as views.
+        hidden = {w.get("name") for w in root.iter("window") if w.get("class") == "worksheet" and w.get("hidden") == "true"}
         sheets = {}
         for ws in root.iter("worksheet"):
+            if ws.get("name") in hidden:
+                continue
             gf = ws.find(".//groupfilter")
             sheets[ws.get("name")] = gf.get("member").strip('"')
         dash = [d.get("name") for d in root.iter("dashboard")]

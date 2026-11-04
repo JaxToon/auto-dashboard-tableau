@@ -83,6 +83,17 @@ def test_full_flow_preview_matches_fixture(clients):
     assert bars == EXPECTED["demo_sme_credit"]["total_outstanding_by_region_2025_12"]
 
 
+def test_preview_has_key_findings_and_related_breakdowns(clients):
+    biz = clients.as_user("demo.business")
+    did = biz.post("/api/v1/dashboards/plan", json={"interpretation_id": ask(biz)["interpretation_id"]}).json()["id"]
+    pv = biz.post(f"/api/v1/dashboards/{did}/preview", json={}).json()
+    ids = {r["viz_id"] for r in pv["results"]}
+    assert {"comparison_outstanding_growth_pct", "comparison_target_achievement_pct"} <= ids
+    text = " ".join(pv["insights"])
+    assert "Jakarta has the highest Total Credit Outstanding (Rp 2.15 T" in text  # computed from the validated results
+    assert "below 100%" in text and 1 <= len(pv["insights"]) <= 5
+
+
 def test_view_filters_change_results_but_not_the_draft(clients):
     did = build_ready_draft(clients)
     biz = clients.as_user("demo.business")
@@ -177,7 +188,7 @@ def test_fake_rest_publish_verified(make_app):
     out = biz.post(f"/api/v1/dashboards/{did}/publish", json={"confirm": True}).json()
     assert out["publication"]["status"] == "Published" and out["publication"]["verified"]
     assert out["draft"]["status"] == "Published"
-    assert out["draft"]["verified_url"] == "https://tableau.example.test/#/site/poc/workbooks/1"
+    assert out["draft"]["verified_url"].startswith("https://tableau.example.test/#/site/poc/views/")
     # idempotent: publishing the same version again does not create a duplicate workbook
     again = biz.post(f"/api/v1/dashboards/{did}/publish", json={"confirm": True}).json()
     assert again["duplicate"] is True and len(fake.published) == 1

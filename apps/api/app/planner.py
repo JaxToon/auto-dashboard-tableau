@@ -504,6 +504,14 @@ class RulesPlanner(LLMProvider):
                     metric_ids=[primary.id], dimension_ids=[dims[0]], sort=sort,
                     highlight_top_n=top_n if top_n and top_n <= 10 else None,
                 ))
+                # Deeper analysis: show the related approved KPIs by the same breakdown, not only as cards.
+                for rel in kpi_metrics[len(requested):]:
+                    if len(vizs) >= 8:
+                        break
+                    vizs.append(Visualization(
+                        id=f"comparison_{rel.id}"[:64], type="bar", title=f"{rel.name} by {ds.field(dims[0]).name} ({range_note(rel)})",
+                        metric_ids=[rel.id], dimension_ids=[dims[0]], sort="desc",
+                    ))
             for extra in requested[1:3]:
                 if len(vizs) >= 8:
                     break

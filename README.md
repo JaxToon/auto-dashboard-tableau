@@ -11,14 +11,14 @@ Ask a business question in Bahasa Indonesia or English, get a validated dashboar
 | Question → intent → dashboard spec → validation → preview | **Implemented and tested.** Rules-based planner; no external AI calls. |
 | Synthetic dataset, semantic catalog, 7 KPI definitions (5 credit, 2 deposit) | **Implemented.** Expected values checked independently. |
 | Draft editing, versioning, BA review gate, audit trail, kill switches | **Implemented and tested.** |
-| Tableau REST publishing + read-back verification (TSC, PAT auth) | **Implemented and unit-tested. Sign-in, project listing and project validation verified against a real Tableau Cloud developer site (2026.3); a real publish has not been run yet.** |
-| Generated `.twbx` workbook | **Deterministic and structurally tested. Not yet opened in Tableau Desktop/Server.** |
-| Mandatory E2E (`apps/api/tests_e2e`) | **Not yet passed.** It fails by design until real Tableau credentials are configured. |
+| Tableau REST publishing + read-back verification (TSC, PAT auth) | **Verified on a real Tableau Cloud developer site (2026.3):** publish, read-back of every view, and Tableau-rendered KPI values matching the preview. |
+| Generated `.twbx` workbook | **Deterministic; accepted and rendered by Tableau Cloud.** Dashboard with key findings, KPI cards, trend with legend, labelled breakdowns. |
+| Mandatory E2E (`apps/api/tests_e2e`) | **Passed against a real Tableau Cloud developer site.** It still fails by design when Tableau is missing or mocked. |
 | Recurring-question recommendations (P1) | **Implemented on SIMULATED events**, behind a feature flag. |
 | Adapter for an existing conversational analytics tool, production database adapter, Tableau embedding (P2) | Not implemented (out of scope). |
 | SSO | Not implemented; mock login only (labelled). |
 
-**The PoC is not complete until the real-Tableau E2E passes** (PRD §3.3, §8.4). Follow [docs/runbooks/real-tableau-e2e.md](docs/runbooks/real-tableau-e2e.md) once the Tableau administrator provisions a project and publisher token.
+The real-Tableau E2E (PRD §3.3, §8.4) has passed on a Tableau Cloud developer site. To run it against your own site, follow [docs/runbooks/real-tableau-e2e.md](docs/runbooks/real-tableau-e2e.md).
 
 ## Quick start (local, Windows/macOS/Linux)
 

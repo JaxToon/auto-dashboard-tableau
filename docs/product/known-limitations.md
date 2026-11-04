@@ -1,7 +1,7 @@
 # Known limitations
 
-1. **No real Tableau publication yet.** The REST adapter and workbook generator are tested against fakes only. The mandatory E2E fails until a real site is configured.
-2. **Workbook XML unverified in Tableau.** Generated to the 18.1 format; may need adjustments once opened in Tableau Desktop. KPI cards use the default text size.
+1. **Verified on one Tableau Cloud developer site only.** Publishing and value read-back passed there; Tableau Server and other sites still need their own run.
+2. **Fixed dashboard template.** KPI cards are dashboard text zones; worksheets are also published as separate views so their values can be verified.
 3. **Rules-based planner.** Understands catalog synonyms, periods, top-N, filters and comparisons in ID/EN, but not free-form phrasing outside those patterns (it then asks for clarification or refuses). No LLM is used.
 4. **Mock login only.** No SSO.
 5. **Single-instance state.** Interpretations and rate limits are in process memory; sessions/drafts are in the database.

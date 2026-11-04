@@ -61,13 +61,29 @@ def test_artifact_structure(artifact):
     sheets = {ws.get("name") for ws in root.iter("worksheet")}
     assert sheets == set(art.sheet_names.values())
     zone_names = {z.get("name") for z in root.iter("zone") if z.get("name")}
-    assert zone_names == sheets  # every worksheet is placed on the dashboard
+    chart_sheets = {art.sheet_names[r.viz_id] for r in results if r.viz_type != "kpi_card"}
+    assert zone_names == chart_sheets  # every chart is on the dashboard; KPIs are text zones
+    xml = ET.tostring(root, encoding="unicode")
+    for r in results:
+        if r.viz_type == "kpi_card":
+            assert next(x["value_label"] for x in art.csv_rows if x["viz_id"] == r.viz_id) in xml  # KPI card shows the verified value
+    legends = [z for z in root.iter("zone") if z.get("type-v2") == "color"]
+    assert legends and all(z.get("param", "").endswith("[none:series:nk]") for z in legends)
     assert [d.get("name") for d in root.iter("dashboard")] == [art.dashboard_name]
     # every worksheet filters to an existing viz id
     viz_ids = {r["viz_id"] for r in rows}
     for ws in root.iter("worksheet"):
         assert ws.find(".//groupfilter").get("member").strip('"') in viz_ids
     assert "SYNTHETIC" in ET.tostring(root, encoding="unicode")
+
+
+def test_worksheets_are_not_hidden(artifact):
+    """Hidden sheets are not published as views, which breaks value read-back (found on Tableau Cloud)."""
+    with zipfile.ZipFile(io.BytesIO(artifact[2].content)) as z:
+        root = ET.fromstring(z.read(next(n for n in z.namelist() if n.endswith(".twb"))))
+    windows = [w for w in root.iter("window") if w.get("class") == "worksheet"]
+    assert len(windows) == len(artifact[2].sheet_names)
+    assert not any(w.get("hidden") == "true" for w in windows)
 
 
 def test_artifact_values_equal_preview_and_expected(artifact):
@@ -133,16 +149,17 @@ def test_rest_publish_and_verify(artifact, tmp_path):
     res = pub.publish_dashboard(art, _write(art, tmp_path), "proj-poc")
     v = pub.verify_publication(res.content_id, art, "proj-poc")
     assert v.verified, v.checks
-    assert v.content_url == "https://tableau.example.test/#/site/poc/workbooks/1"
+    assert v.url_source == "tableau_dashboard_view"
+    assert v.content_url.startswith("https://tableau.example.test/#/site/poc/views/wb/")  # opens the dashboard, not the workbook page
     assert any(ch["name"].startswith("value:") and ch["ok"] for ch in v.checks)
 
 
-def test_rest_url_fallback_is_marked_constructed(artifact, tmp_path):
+def test_rest_url_works_without_webpage_url(artifact, tmp_path):
     art = artifact[2]
     pub = RestTableauPublisher(settings(), tsc=FakeTableau(url=False))
     res = pub.publish_dashboard(art, _write(art, tmp_path), "proj-poc")
     v = pub.verify_publication(res.content_id, art, "proj-poc")
-    assert v.verified and v.url_source == "constructed_from_verified_view"
+    assert v.verified and v.url_source == "tableau_dashboard_view"
     assert v.content_url.startswith("https://tableau.example.test/#/site/poc/views/")
 
 

@@ -250,11 +250,14 @@ class RestTableauPublisher(TableauPublisher):
                     except Exception as exc:  # noqa: BLE001
                         checks.append({"name": f"value:{v.name}", "ok": False, "error": getattr(exc, "summary", exc.__class__.__name__)})
 
-            url, source = getattr(wb, "webpage_url", None), "tableau_webpage_url"
-            if not url:
-                dash = next((v for v in views if v["name"] == artifact.dashboard_name), None)
-                if dash and dash["content_url"]:
-                    url, source = f"{self._site_url()}/views/{dash['content_url'].replace('/sheets/', '/')}", "constructed_from_verified_view"
+            # Prefer the dashboard view itself (built from the content URL Tableau returned for the
+            # verified view); fall back to the workbook page Tableau reports.
+            url, source = None, ""
+            dash = next((v for v in views if v["name"] == artifact.dashboard_name), None)
+            if dash and dash["content_url"]:
+                url, source = f"{self._site_url()}/views/{dash['content_url'].replace('/sheets/', '/')}", "tableau_dashboard_view"
+            elif getattr(wb, "webpage_url", None):
+                url, source = wb.webpage_url, "tableau_webpage_url"
             checks.append({"name": "content_url_present", "ok": bool(url)})
             pname = next((p.name for p in self._projects(server) if p.id == wb.project_id), "")
             verified = all(c["ok"] for c in checks)

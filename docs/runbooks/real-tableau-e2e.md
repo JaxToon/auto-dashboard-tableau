@@ -67,4 +67,4 @@ Record the result (date, Tableau version, URL, screenshot) in this file's log be
 
 | Date | Tableau version | Result | URL | By |
 |---|---|---|---|---|
-| | | | | |
+| 2026-11-04 | Tableau Cloud 2026.3.2 (developer site) | Pass: published, all views present, KPI values matched (Rp 11.95 T, 13.61%, 96.19%) | (kept private) | project owner |
