@@ -34,7 +34,9 @@ def artifact(c):
     intent = c.planner.classify_intent("Show monthly SME credit outstanding by region for 2025.", c.semantic_context(u), {}).intent
     spec = c.planner.generate_dashboard_spec(intent, c.semantic_context(u))
     results = c.data.execute_validated_plan(spec, u)
-    return spec, results, build_twbx(spec, results, c.catalog, draft_id="00000000-test", version=1, footer="POC / SYNTHETIC DATA")
+    dims, parts = c.data.components(spec, u)
+    art = build_twbx(spec, results, c.catalog, dims=dims, components=parts, draft_id="00000000-test", version=1, footer="POC / SYNTHETIC DATA")
+    return spec, results, art, dims, parts
 
 
 def settings(**kw):
@@ -45,36 +47,63 @@ def settings(**kw):
 
 
 def test_artifact_is_deterministic(c, artifact):
-    spec, results, art = artifact
-    again = build_twbx(spec, results, c.catalog, draft_id="00000000-test", version=1, footer="POC / SYNTHETIC DATA")
+    spec, results, art, dims, parts = artifact
+    again = build_twbx(spec, results, c.catalog, dims=dims, components=parts, draft_id="00000000-test", version=1, footer="POC / SYNTHETIC DATA")
     assert art.content == again.content and art.sha256 == again.sha256
 
 
-def test_artifact_structure(artifact):
-    spec, results, art = artifact
+def _twb(art):
     with zipfile.ZipFile(io.BytesIO(art.content)) as z:
         names = z.namelist()
-        twb = next(n for n in names if n.endswith(".twb"))
-        root = ET.fromstring(z.read(twb))  # well-formed XML
-        rows = list(csv.DictReader(io.StringIO(z.read("Data/results/results.csv").decode())))
-    assert "Data/results/results.csv" in names
+        root = ET.fromstring(z.read(next(n for n in names if n.endswith(".twb"))))  # well-formed XML
+        rows = list(csv.DictReader(io.StringIO(z.read("Data/results/kpi_parts.csv").decode())))
+    return names, root, rows
+
+
+def test_artifact_structure(artifact):
+    spec, results, art, dims, parts = artifact
+    names, root, rows = _twb(art)
+    assert "Data/results/kpi_parts.csv" in names and len(rows) == len(parts)
     sheets = {ws.get("name") for ws in root.iter("worksheet")}
     assert sheets == set(art.sheet_names.values())
     zone_names = {z.get("name") for z in root.iter("zone") if z.get("name")}
-    chart_sheets = {art.sheet_names[r.viz_id] for r in results if r.viz_type != "kpi_card"}
-    assert zone_names == chart_sheets  # every chart is on the dashboard; KPIs are text zones
-    xml = ET.tostring(root, encoding="unicode")
+    assert zone_names == sheets  # every worksheet (KPI cards included) is on the dashboard
+    assert set(art.kpi_expected) == {art.sheet_names[r.viz_id] for r in results if r.viz_type == "kpi_card"}
+    legends = [z for z in root.iter("zone") if z.get("type-v2") == "color"]
+    assert legends and all(z.get("param", "").endswith("[none:region:nk]") for z in legends)
+    assert [d.get("name") for d in root.iter("dashboard")] == [art.dashboard_name]
+    assert "SYNTHETIC" in ET.tostring(root, encoding="unicode")
+
+
+def test_dashboard_filters_are_parameters_applied_to_every_sheet(artifact):
+    spec, results, art, dims, parts = artifact
+    _, root, _ = _twb(art)
+    controls = [z.get("param") for z in root.iter("zone") if z.get("type-v2") == "paramctrl"]
+    params = {c.get("caption"): c for c in root.find("datasources").find("datasource[@name='Parameters']").iter("column")}
+    assert set(params) == {"Region", "Branch (synthetic code)", "Product segment"} and len(controls) == 3
+    assert [m.get("value") for m in params["Region"].iter("member")][:2] == ['"All"', '"Jakarta"']
+    for ws in root.iter("worksheet"):
+        cols = [f.get("column") for f in ws.iter("filter")]
+        assert any(c.endswith("[none:Calculation_ok:nk]") for c in cols), ws.get("name")  # every sheet obeys the filters
+
+
+def test_kpi_parts_reproduce_the_validated_results(artifact):
+    """Tableau applies sum-then-divide to the parts; check that this equals the app's KPI values."""
+    spec, results, art, dims, parts = artifact
+
+    def kpi(metric_id, keep=lambda r: True):
+        rr = [r for r in parts if r["scope"] == "range" and r["metric_id"] == metric_id and keep(r)]
+        a, b = sum(r["a"] for r in rr), sum(r["b"] or 0 for r in rr)
+        kind = {"total_outstanding": "sum", "outstanding_growth_pct": "growth", "target_achievement_pct": "ratio"}[metric_id]
+        return a if kind == "sum" else (a / b - 1) * 100 if kind == "growth" else a / b * 100
+
     for r in results:
         if r.viz_type == "kpi_card":
-            assert next(x["value_label"] for x in art.csv_rows if x["viz_id"] == r.viz_id) in xml  # KPI card shows the verified value
-    legends = [z for z in root.iter("zone") if z.get("type-v2") == "color"]
-    assert legends and all(z.get("param", "").endswith("[none:series:nk]") for z in legends)
-    assert [d.get("name") for d in root.iter("dashboard")] == [art.dashboard_name]
-    # every worksheet filters to an existing viz id
-    viz_ids = {r["viz_id"] for r in rows}
-    for ws in root.iter("worksheet"):
-        assert ws.find(".//groupfilter").get("member").strip('"') in viz_ids
-    assert "SYNTHETIC" in ET.tostring(root, encoding="unicode")
+            mid = r.columns[0]["key"]
+            assert kpi(mid) == pytest.approx(r.rows[0][mid], rel=1e-9, abs=1e-6)  # app rounds percentages to 6 decimals
+    by_region = next(r for r in results if r.viz_id == "comparison")
+    for row in by_region.rows:
+        assert kpi("total_outstanding", lambda p, reg=row["region"]: p["region"] == reg) == pytest.approx(row["total_outstanding"], rel=1e-9)
 
 
 def test_worksheets_are_not_hidden(artifact):
@@ -87,7 +116,7 @@ def test_worksheets_are_not_hidden(artifact):
 
 
 def test_artifact_values_equal_preview_and_expected(artifact):
-    spec, results, art = artifact
+    spec, results, art, _dims, _parts = artifact
     kpi = next(r for r in art.csv_rows if r["viz_id"] == "kpi_total_outstanding")
     assert float(kpi["value"]) == EXPECTED["demo_sme_credit"]["total_outstanding_2025_12"]
     bars = {r["category"]: float(r["value"]) for r in art.csv_rows if r["viz_id"] == "comparison"}

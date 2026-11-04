@@ -173,6 +173,30 @@ class SyntheticDataAdapter(DataProvider):
         ds = self.catalog.require_dataset(spec.dataset_id, user.roles)  # re-authorize on every request
         return [self.run_visualization(spec, ds, viz) for viz in spec.visualizations]
 
+    def components(self, spec: DashboardSpec, user: UserContext) -> tuple[list[str], list[dict[str, Any]]]:
+        """Additive KPI parts at the finest filterable grain (every dimension), for the saved view.
+
+        Returns the dimension IDs and rows of {scope, period, <dims>, metric_id, a, b}, where scope
+        is "range" (whole period, for KPI cards and breakdowns) or "period" (per month/quarter).
+        """
+        self._check_enabled()
+        ds = self.catalog.require_dataset(spec.dataset_id, user.roles)
+        dims = [f.id for f in ds.dimension_fields]
+        metrics = [self.catalog.metric(m.metric_id) for m in spec.metrics]
+        scopes = [("range", None)]
+        if any(ds.date_field in v.dimension_ids for v in spec.visualizations):
+            scopes.append(("period", spec.time_range.grain))
+        out: list[dict[str, Any]] = []
+        for scope, grain in scopes:
+            res = self.query(ds, metrics, dims, grain, spec.time_range.start, spec.time_range.end, spec.filters, components=True)
+            for r in res.rows:
+                for m in metrics:
+                    a, b = r[m.id]
+                    if a is None and b is None:
+                        continue
+                    out.append({"scope": scope, "period": r.get("period", ""), **{d: r[d] for d in dims}, "metric_id": m.id, "a": a, "b": b})
+        return dims, out
+
     # --- engine ---------------------------------------------------------------------
     def run_visualization(self, spec: DashboardSpec, ds: Dataset, viz: Visualization) -> VizResult:
         metrics = [self.catalog.metric(m) for m in viz.metric_ids]
@@ -229,8 +253,16 @@ class SyntheticDataAdapter(DataProvider):
         start: date,
         end: date,
         filters: list[FilterSpec],
+        components: bool = False,
     ) -> QueryResult:
-        """Aggregate metrics by `dims` (and time `grain` when given) over [start, end]."""
+        """Aggregate metrics by `dims` (and time `grain` when given) over [start, end].
+
+        With `components=True` each metric cell holds its additive parts `(a, b)` instead of the
+        final value: sum -> (total, None), ratio -> (numerator, denominator), growth -> (current,
+        previous). Summing parts over any subset of groups and then applying the formula gives
+        the same answer as querying that subset directly (for period-end measures this holds when
+        every group has data in the period-end month), which is what Tableau filters need.
+        """
         self._check_enabled()
         date_field = ds.date_field
         s_mi, e_mi = month_index(start), month_index(end)
@@ -289,6 +321,16 @@ class SyntheticDataAdapter(DataProvider):
                 return None if cur is None else round(float((cur / before - 1) * 100), 6)
             raise ValidationFailed("Unsupported formula type.", code="UNSUPPORTED_FORMULA")
 
+        def parts(metric: Metric, group: dict[int, list[dict]], window: list[int], prev: list[int]) -> tuple[float | None, float | None]:
+            f = metric.formula
+            if f.type == "sum":
+                a, b = base(group, f.field, window), None
+            elif f.type == "ratio":
+                a, b = base(group, f.numerator, window), base(group, f.denominator, window)
+            else:
+                a, b = base(group, f.field, window), base(group, f.field, prev)
+            return (None if a is None else float(a)), (None if b is None else float(b))
+
         if grain is None:
             buckets = {None: (list(range(s_mi, e_mi + 1)), list(range(s_mi - range_len, s_mi)))}
         else:
@@ -313,7 +355,7 @@ class SyntheticDataAdapter(DataProvider):
                 if b is not None:
                     row["period"] = index_to_date(b).isoformat()
                 for m in metrics:
-                    row[m.id] = value(m, group, window, prev)
+                    row[m.id] = parts(m, group, window, prev) if components else value(m, group, window, prev)
                 rows.append(row)
 
         if dims and len({tuple(r[d] for d in dims) for r in rows}) > max(self.max_series, 40):

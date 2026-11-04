@@ -123,15 +123,19 @@ class FakeTableau:
         with zipfile.ZipFile(io.BytesIO(content)) as z:
             twb = next(n for n in z.namelist() if n.endswith(".twb"))
             root = ET.fromstring(z.read(twb))
-            csv_text = z.read("Data/results/results.csv").decode()
+            csv_text = z.read("Data/results/kpi_parts.csv").decode()
+        # Calculated fields of the main data source: name -> formula.
+        formulas = {c.get("name").strip("[]"): c.find("calculation").get("formula")
+                    for c in root.find("datasources").iter("column") if c.find("calculation") is not None and c.get("name", "").startswith("[Calculation_m")}
         # Like real Tableau, hidden worksheets are not published as views.
         hidden = {w.get("name") for w in root.iter("window") if w.get("class") == "worksheet" and w.get("hidden") == "true"}
         sheets = {}
         for ws in root.iter("worksheet"):
             if ws.get("name") in hidden:
                 continue
-            gf = ws.find(".//groupfilter")
-            sheets[ws.get("name")] = gf.get("member").strip('"')
+            text = ws.find(".//encodings/text")
+            calc = re.search(r"usr:(Calculation_m\d+):qk", text.get("column")).group(1) if text is not None else None
+            sheets[ws.get("name")] = formulas.get(calc)
         dash = [d.get("name") for d in root.iter("dashboard")]
         self.published[wid] = {"name": item.name, "project_id": self.project_id if not self.wrong_project else "other", "sheets": sheets, "dash": dash, "csv": csv_text}
         return SimpleNamespace(id=wid, name=item.name, project_id=item.project_id, webpage_url=None)
@@ -148,10 +152,22 @@ class FakeTableau:
             names = names[:1]
         wb.views = [SimpleNamespace(id=f"v{i}", name=n, content_url="wb/sheets/" + re.sub(r"\W", "", n), _wid=wb.id) for i, n in enumerate(names)]
 
-    def _populate_csv(self, view):
+    def _populate_csv(self, view, options=None):
+        """Evaluate a KPI sheet's formula over the embedded parts, the way Tableau does (filters on All)."""
         import csv as _csv
 
         p = self.published[view._wid]
-        viz = p["sheets"].get(view.name)
-        rows = [r for r in _csv.DictReader(io.StringIO(p["csv"])) if r["viz_id"] == viz]
-        view.csv = [("Value Label\n" + "\n".join(f'"{r["value_label"]}"' for r in rows)).encode()]
+        formula = p["sheets"].get(view.name)
+        mid = re.search(r'\[metric_id\] = "([^"]+)"', formula).group(1)
+        rows = [r for r in _csv.DictReader(io.StringIO(p["csv"])) if r["scope"] == "range" and r["metric_id"] == mid]
+        a = sum(float(r["a"]) for r in rows if r["a"])
+        b = sum(float(r["b"]) for r in rows if r["b"])
+        if formula.endswith("- 1"):
+            shown = f"{(a / b - 1) * 100:.2f}%"
+        elif "/ SUM(" in formula:
+            factor = float(formula.rsplit("*", 1)[1]) if "*" in formula else 1.0
+            shown = f"{a / b * factor * 100:.2f}%"
+        else:
+            div = re.search(r"/ (\d+)$", formula)
+            shown = f"{a / (int(div.group(1)) if div else 1):.2f}"
+        view.csv = [f"Measure\n{shown}\n".encode()]

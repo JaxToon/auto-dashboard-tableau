@@ -114,6 +114,26 @@ class MockTableauPublisher(TableauPublisher):
         return None
 
 
+def _numbers(csv_text: str) -> list[float]:
+    """Every number in a view's CSV export, ignoring currency, unit and percent decorations."""
+    out = []
+    for row in csv.reader(io.StringIO(csv_text)):
+        for cell in row:
+            cleaned = cell.replace("Rp", "").replace(",", "").replace("%", "").replace(" T", "").replace(" M", "").strip()
+            try:
+                out.append(float(cleaned))
+            except ValueError:
+                continue
+    return out
+
+
+def _close(found: float, expected: float) -> bool:
+    """Equal within 2-decimal display rounding. `expected` is in display units (Rp T/M, or
+    0-100 for percent); Tableau may export a percent formatted (13.61%) or as a fraction (0.1361)."""
+    tol = max(0.006, abs(expected) * 0.0005)
+    return abs(found - expected) <= tol or abs(found * 100 - expected) <= tol
+
+
 def _tableau_error(exc: Exception, action: str) -> IntegrationError:
     code = getattr(exc, "code", None)
     summary = getattr(exc, "summary", None) or exc.__class__.__name__
@@ -238,15 +258,16 @@ class RestTableauPublisher(TableauPublisher):
             checks.append({"name": "dashboard_view_present", "ok": artifact.dashboard_name in names})
             checks.append({"name": "all_sheets_present", "ok": set(artifact.sheet_names.values()) <= names})
 
-            # Value check: KPI worksheets must render the same labels as the validated preview.
-            kpi_labels = {artifact.sheet_names[r["viz_id"]]: r["value_label"] for r in artifact.csv_rows if r["viz_id"].startswith("kpi_")}
+            # Value check: Tableau computes each KPI from the embedded parts; with every filter on
+            # "All" it must equal the validated preview (within display rounding).
             for v in wb.views:
-                if v.name in kpi_labels:
+                if v.name in artifact.kpi_expected:
                     try:
                         server.views.populate_csv(v)
                         text = b"".join(v.csv).decode("utf-8", "replace")
-                        ok = kpi_labels[v.name] in {c.strip() for row in csv.reader(io.StringIO(text)) for c in row}
-                        checks.append({"name": f"value:{v.name}", "ok": ok, "expected": kpi_labels[v.name]})
+                        expected = artifact.kpi_expected[v.name]
+                        ok = any(_close(n, expected) for n in _numbers(text))
+                        checks.append({"name": f"value:{v.name}", "ok": ok, "expected": round(expected, 6)})
                     except Exception as exc:  # noqa: BLE001
                         checks.append({"name": f"value:{v.name}", "ok": False, "error": getattr(exc, "summary", exc.__class__.__name__)})
 
