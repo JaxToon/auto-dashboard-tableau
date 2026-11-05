@@ -25,14 +25,14 @@ from datetime import date
 from .catalog import Catalog, Metric
 from .data_provider import VizResult
 from .schema import DashboardSpec
+from .tableau_theme import choose_style
 
 USER_NS = "http://www.tableausoftware.com/xml/user"
 ET.register_namespace("user", USER_NS)
 REMOTE_TYPES = {"string": "129", "real": "5", "date": "7"}
 ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 MARKS = {"kpi_card": "Text", "line": "Line", "bar": "Bar", "table": "Text"}
-INK, INK_2, TEAL, SIGNAL, MUTED, PANEL = "#10262b", "#3d5559", "#0b6e6e", "#e8590c", "#9fb9b7", "#f3f6f5"
-PAD = 1200  # left/right dashboard margin, in zone units (1/100000 of the width)
+MAX_END_LABELS = 6  # line charts with more series than this get a colour legend instead of end labels
 
 
 @dataclass
@@ -183,6 +183,15 @@ def build_twb(
 
     wb = ET.Element("workbook", {"original-version": "18.1", "source-platform": "win", "version": "18.1"})
     _sub(wb, "preferences")
+    kpis = [r for r in results if r.viz_type == "kpi_card"]
+    charts = [r for r in results if r.viz_type != "kpi_card"]
+    recipe, th = choose_style(spec.recipe, spec.theme, len(kpis), len(charts))
+    wstyle = _sub(wb, "style")
+    for el, fmts in (("all", {"font-family": th.font, "color": th.ink_2}), ("worksheet", {"font-size": "9"}),
+                     ("title", {"font-family": th.font_strong, "font-size": "11", "color": th.ink}), ("tooltip", {"font-size": "9"})):
+        rule = _sub(wstyle, "style-rule", {"element": el})
+        for k_, v_ in fmts.items():
+            _sub(rule, "format", {"attr": k_, "value": v_})
     dss = _sub(wb, "datasources")
 
     # Parameters drive the dashboard filters: one single-select list per dimension, "All" by default.
@@ -242,38 +251,92 @@ def build_twb(
                                       "role": "dimension", "type": "nominal"})
         _sub(col, "calculation", {"class": "tableau", "formula": filter_formula})
 
+    # --- KPI-card calculations: value over the whole range, change vs the previous period -----
+    periods = sorted({str(r["period"]) for r in comp_rows if r["scope"] == "period" and r["period"]})
+    last_p, prev_p = (periods[-1], periods[-2]) if len(periods) >= 2 else (None, None)
+    grain = spec.time_range.grain
+    kpi_calcs: dict[str, dict[str, str]] = {}
+    extra: list[tuple[str, str, str, str]] = []  # name, caption, formula, default format
+    kpi_metric_ids = {v.metric_ids[0] for v in spec.visualizations if v.type == "kpi_card"}
+    for i, (mid, mc) in enumerate(calcs.items()):
+        if mid not in kpi_metric_ids:
+            continue
+        k = {"value": f"Calculation_k{i}"}
+        extra.append((k["value"], mc.caption, mc.formula.replace("IF [metric_id] =", 'IF [scope] = "range" AND [metric_id] ='), mc.fmt))
+        m = mc.metric
+        if last_p and m.formula.type in ("sum", "ratio"):
+            def part(p: str, col: str, mid: str = mid) -> str:
+                return f'SUM(IF [scope] = "period" AND [period] = #{p}# AND [metric_id] = "{mid}" THEN [{col}] END)'
+            if m.formula.type == "sum":
+                d = f"({part(last_p, 'a')} / {part(prev_p, 'a')} - 1)"
+                k |= {"fmt_up": '*"▲ "0.0%', "fmt_dn": '*"▼ "0.0%;"▼ "0.0%'}
+            else:  # change in percentage points
+                d = f"(({part(last_p, 'a')} / {part(last_p, 'b')} - {part(prev_p, 'a')} / {part(prev_p, 'b')}) * {m.formula.scale:g})"
+                k |= {"fmt_up": '*"▲ "0.00" pp"', "fmt_dn": '*"▼ "0.00" pp";"▼ "0.00" pp"'}
+            k |= {"up": f"Calculation_u{i}", "down": f"Calculation_w{i}",
+                  "vs": f"  {_period_text(last_p, grain)} vs {_period_text(prev_p, grain)}", "good_up": "1" if m.higher_is_better else ""}
+            extra += [(k["up"], f"{m.name} - increase", f"IF {d} >= 0 THEN {d} END", "n#,##0.00"),
+                      (k["down"], f"{m.name} - decrease", f"IF {d} < 0 THEN {d} END", "n#,##0.00")]
+        kpi_calcs[mid] = k
+
+    def extra_column(parent: ET.Element, name: str, caption: str, formula: str, fmt: str) -> None:
+        col = _sub(parent, "column", {"caption": caption, "datatype": "real", "default-format": fmt, "name": f"[{name}]",
+                                      "role": "measure", "type": "quantitative"})
+        _sub(col, "calculation", {"class": "tableau", "formula": formula})
+
     for name, typ in columns:
         physical(ds_el, name, typ)
     ok_column(ds_el)
     for c in calcs.values():
         calc_column(ds_el, c)
+    for e in extra:
+        extra_column(ds_el, *e)
 
-    # Highlight colours (fixed): top-N members in signal orange, the rest muted.
+    # Fixed colours per member: top-N emphasis, and the theme's categorical palette for series
+    # (largest series first, so the biggest line gets the accent colour).
+    palettes: dict[str, dict[str, str]] = {}
     hl_viz = next((v for v in spec.visualizations if v.highlight_top_n), None)
     if hl_viz:
-        enc = _sub(_sub(_sub(ds_el, "style"), "style-rule", {"element": "mark"}), "encoding",
-                   {"attr": "color", "field": "[none:highlight:nk]", "type": "palette"})
-        _sub(_sub(enc, "map", {"to": SIGNAL}), "bucket", text=f'"Top {hl_viz.highlight_top_n}"')
-        _sub(_sub(enc, "map", {"to": MUTED}), "bucket", text='"Other"')
+        palettes["none:highlight:nk"] = {f"Top {hl_viz.highlight_top_n}": th.highlight, "Other": th.other}
+    for res in charts:
+        viz = next(v for v in spec.visualizations if v.id == res.viz_id)
+        cats = [d for d in viz.dimension_ids if d != ds_meta.date_field]
+        dim = cats[0] if res.viz_type == "line" and cats else cats[1] if res.viz_type == "bar" and len(cats) > 1 and viz is not hl_viz else None
+        if not dim:
+            continue
+        mid = viz.metric_ids[0]
+        totals: dict[str, float] = {}
+        for r in res.rows:
+            if r.get(dim) is not None:
+                totals[str(r[dim])] = totals.get(str(r[dim]), 0.0) + (r.get(mid) or 0.0)
+        pal = palettes.setdefault(f"none:{dim}:nk", {})
+        for member in sorted(totals, key=lambda x: (-totals[x], x)):
+            pal.setdefault(member, th.series[len(pal) % len(th.series)])
+    if palettes:
+        # Tableau applies a data-source colour map only to a column instance declared on the data source.
+        for fld in palettes:
+            col = fld.split(":")[1]
+            _sub(ds_el, "column-instance", {"column": f"[{col}]", "derivation": "None", "name": f"[{fld}]", "pivot": "key", "type": "nominal"})
+        prule = _sub(_sub(ds_el, "style"), "style-rule", {"element": "mark"})
+        for fld, mapping in palettes.items():
+            enc = _sub(prule, "encoding", {"attr": "color", "field": f"[{fld}]", "type": "palette"})
+            for member, colour in mapping.items():
+                _sub(_sub(enc, "map", {"to": colour}), "bucket", text=f'"{member}"')
 
+    # --- worksheets ------------------------------------------------------------------------
     used: set[str] = set()
     sheet_names: dict[str, str] = {}
-    series_dims: dict[str, str] = {}
+    series_dims: dict[str, tuple[str, int]] = {}  # sheet -> (colour dimension, number of series)
     kpi_expected: dict[str, float] = {}
     worksheets = _sub(wb, "worksheets")
-    for res in results:
-        viz = next(v for v in spec.visualizations if v.id == res.viz_id)
-        mc = calcs[viz.metric_ids[0]]
-        cats = [d for d in viz.dimension_ids if d != ds_meta.date_field]
-        has_time = ds_meta.date_field in viz.dimension_ids
-        sheet = _sheet_name(res.title, used)
-        sheet_names[viz.id] = sheet
+    on_band = recipe == "band"
+    kpi_bg = th.band if on_band else th.card
+
+    def new_sheet(sheet: str, title: str | None = None) -> tuple[ET.Element, ET.Element, ET.Element]:
         ws = _sub(worksheets, "worksheet", {"name": sheet})
-        title = _sub(_sub(_sub(ws, "layout-options"), "title"), "formatted-text")
-        if res.viz_type == "kpi_card":
-            _sub(title, "run", {"fontcolor": INK_2, "fontsize": "10"}, res.title)
-        else:
-            _sub(title, "run", {"bold": "true", "fontcolor": INK, "fontsize": "12"}, res.title)
+        if title:
+            ft = _sub(_sub(_sub(ws, "layout-options"), "title"), "formatted-text")
+            _sub(ft, "run", {"fontcolor": th.ink, "fontname": th.font_strong, "fontsize": "11"}, title)
         table = _sub(ws, "table")
         view = _sub(table, "view")
         # The data source listed first is the worksheet's primary source; Parameters must not be first.
@@ -288,78 +351,208 @@ def build_twb(
         for name, typ in columns:
             physical(deps, name, typ)
         ok_column(deps)
-        calc_column(deps, mc)
+        return ws, table, view, deps
 
-        def inst(col: str, derivation: str, iname: str, itype: str, deps: ET.Element = deps) -> str:
-            _sub(deps, "column-instance", {"column": f"[{col}]", "derivation": derivation, "name": f"[{iname}]", "pivot": "key", "type": itype})
-            return q(iname)
+    def inst(deps: ET.Element, col: str, derivation: str, iname: str, itype: str) -> str:
+        _sub(deps, "column-instance", {"column": f"[{col}]", "derivation": derivation, "name": f"[{iname}]", "pivot": "key", "type": itype})
+        return q(iname)
 
-        measure = inst(mc.name, "User", f"usr:{mc.name}:qk", "quantitative")
-        scope = inst("scope", "None", "none:scope:nk", "nominal")
-        ok = inst("Calculation_ok", "None", "none:Calculation_ok:nk", "nominal")
-        time_inst = "tqr:period:qk" if spec.time_range.grain == "quarter" else "tmn:period:qk"
-        derivation = "Quarter-Trunc" if spec.time_range.grain == "quarter" else "Month-Trunc"
-        rows = cols_shelf = ""
-        color = text = sort_on = None
-        labels = hide_row_label = False
-        top_members: list[str] = []
+    def finish_view(view: ET.Element, filters: list[tuple[str, str, list[str]]], sort: tuple[str, str, str] | None = None) -> None:
+        for column, level, members in filters:
+            _member_filter(view, column, level, members)
+        if sort:
+            _sub(view, "computed-sort", {"column": sort[0], "direction": sort[1], "using": sort[2]})
+        slices = _sub(view, "slices")
+        for column, _l, _m in filters:
+            _sub(slices, "column", text=column)
+        _sub(view, "aggregation", {"value": "true"})
+
+    def clean_style(table: ET.Element, bg: str, more: dict[str, list[dict[str, str]]] | None = None) -> None:
+        """No gridlines, zero lines, row dividers or axis ticks; field labels hidden (as in every template)."""
+        rules: dict[str, list[dict[str, str]]] = {
+            "axis": [{"attr": "tick-color", "value": "#00000000"}],
+            "cell": [],
+            "table": [{"attr": "background-color", "value": bg}, {"attr": "show-null-value-warning", "value": "false"}],
+            "worksheet": [{"attr": "display-field-labels", "scope": s, "value": "false"} for s in ("rows", "cols")],
+            "gridline": [{"attr": "line-visibility", "scope": s, "value": "off"} for s in ("rows", "cols")],
+            "zeroline": [{"attr": "line-visibility", "value": "off"}],
+            "table-div": [{"attr": "line-visibility", "scope": s, "value": "off"} for s in ("rows", "cols")],
+        }
+        for el, fmts in (more or {}).items():
+            rules.setdefault(el, []).extend(fmts)
+        st = _sub(table, "style")
+        for el, fmts in rules.items():
+            if fmts:
+                rule = _sub(st, "style-rule", {"element": el})
+                for f in fmts:
+                    _sub(rule, "format", f)
+
+    def label_runs(pane: ET.Element, runs: list[tuple[dict[str, str], str]]) -> None:
+        ft = _sub(_sub(pane, "customized-label"), "formatted-text")
+        for attrs, text in runs:
+            _sub(ft, "run", attrs, text)
+
+    def field_runs(attrs: dict[str, str], field: str) -> list[tuple[dict[str, str], str]]:
+        return [(attrs, "<"), (attrs, field), (attrs, ">")]
+
+    def mark_style(pane: ET.Element, mark: dict[str, str], datalabel: dict[str, str] | None = None) -> None:
+        st = _sub(pane, "style")
+        if datalabel:
+            r = _sub(st, "style-rule", {"element": "datalabel"})
+            for k, v in datalabel.items():
+                _sub(r, "format", {"attr": k, "value": v})
+        r = _sub(st, "style-rule", {"element": "mark"})
+        for k, v in mark.items():
+            _sub(r, "format", {"attr": k, "value": v})
+
+    time_qk = "tqr:period:qk" if grain == "quarter" else "tmn:period:qk"
+    trunc = "Quarter-Trunc" if grain == "quarter" else "Month-Trunc"
+
+    for res in results:
+        viz = next(v for v in spec.visualizations if v.id == res.viz_id)
+        mc = calcs[viz.metric_ids[0]]
+        cats = [d for d in viz.dimension_ids if d != ds_meta.date_field]
+        has_time = ds_meta.date_field in viz.dimension_ids
+        sheet = _sheet_name(res.title, used)
+        sheet_names[viz.id] = sheet
 
         if res.viz_type == "kpi_card":
-            text = measure
+            k = kpi_calcs[mc.metric.id]
+            ws, table, view, deps = new_sheet(sheet)
+            for name, caption, formula, fmt in extra:
+                if name in k.values():
+                    extra_column(deps, name, caption, formula, fmt)
+            value = inst(deps, k["value"], "User", f"usr:{k['value']}:qk", "quantitative")
+            ok = inst(deps, "Calculation_ok", "None", "none:Calculation_ok:nk", "nominal")
+            up = inst(deps, k["up"], "User", f"usr:{k['up']}:qk", "quantitative") if "up" in k else None
+            down = inst(deps, k["down"], "User", f"usr:{k['down']}:qk", "quantitative") if "down" in k else None
+            finish_view(view, [(ok, "[none:Calculation_ok:nk]", ["true"])])
+            cell = [{"attr": "text-align", "value": "left"}, {"attr": "vertical-align", "value": "top"}]
+            if mc.prefix:
+                cell.append({"attr": "text-format", "field": value, "value": f'*"{mc.prefix}"#,##0.00"{mc.suffix}"'})
+            if up:
+                cell += [{"attr": "text-format", "field": up, "value": k["fmt_up"]}, {"attr": "text-format", "field": down, "value": k["fmt_dn"]}]
+            clean_style(table, kpi_bg, {"cell": cell})
+            pane = _sub(_sub(table, "panes"), "pane", {"selection-relaxation-option": "selection-relaxation-allow"})
+            _sub(_sub(pane, "view"), "breakdown", {"value": "auto"})
+            _sub(pane, "mark", {"class": "Text"})
+            enc = _sub(pane, "encodings")
+            for f in (value, up, down):
+                if f:
+                    _sub(enc, "text", {"column": f})
+            lab = th.band_muted if on_band else th.ink_2
+            ink = th.band_ink if on_band else th.ink
+            good, bad = ("#8be3b0", "#ffb08a") if on_band else (th.good, th.bad)
+            runs = [({"fontcolor": lab, "fontname": th.font, "fontsize": "10"}, res.title + "\n")]
+            runs += field_runs({"fontcolor": ink, "fontname": th.font_strong, "fontsize": "24"}, value)
+            if up:
+                up_c, down_c = (good, bad) if k["good_up"] else (bad, good)
+                runs += [({"fontsize": "6"}, "Æ\n")]  # Tableau's line-break marker; a bare newline run is dropped
+                runs += field_runs({"fontcolor": up_c, "fontname": th.font_strong, "fontsize": "10"}, up)
+                runs += field_runs({"fontcolor": down_c, "fontname": th.font_strong, "fontsize": "10"}, down)
+                runs += [({"fontcolor": lab, "fontname": th.font, "fontsize": "9"}, k["vs"])]
+            label_runs(pane, runs)
+            mark_style(pane, {"mark-labels-show": "true"})
+            _sub(table, "rows")
+            _sub(table, "cols")
+            _sub(ws, "simple-id", {"uuid": _uuid(seed + sheet)})
             kpi_value = res.rows[0].get(mc.metric.id) if res.rows else None
             if kpi_value is not None:
                 kpi_expected[sheet] = kpi_value / mc.divisor
-        elif res.viz_type == "line":
-            rows, cols_shelf = measure, inst("period", derivation, time_inst, "quantitative")
+
+            if "up" in k:  # sparkline under the number: the same KPI per period
+                tsheet = _sheet_name(f"{res.title} - trend", used)
+                sheet_names[f"{viz.id}__trend"] = tsheet
+                ws, table, view, deps = new_sheet(tsheet)
+                # KPI minus its lowest point (a table calculation along the periods): same shape, but the
+                # change fills the card instead of sitting on top of an axis that starts at zero.
+                spark = f"Calculation_s{list(calcs).index(mc.metric.id)}"
+                extra_column(deps, spark, f"{mc.metric.name} (trend)", f"({mc.formula}) - WINDOW_MIN({mc.formula})", mc.fmt)
+                measure = inst(deps, spark, "User", f"usr:{spark}:qk", "quantitative")
+                period = inst(deps, "period", trunc, time_qk, "quantitative")
+                scope = inst(deps, "scope", "None", "none:scope:nk", "nominal")
+                ok = inst(deps, "Calculation_ok", "None", "none:Calculation_ok:nk", "nominal")
+                finish_view(view, [(scope, "[none:scope:nk]", ['"period"']), (ok, "[none:Calculation_ok:nk]", ["true"])])
+                clean_style(table, kpi_bg, {"axis": [{"attr": "display", "class": "0", "field": measure, "scope": "rows", "value": "false"},
+                                                     {"attr": "display", "class": "0", "field": period, "scope": "cols", "value": "false"},
+                                                     {"attr": "line-visibility", "value": "off"}],
+                                            "pane": [{"attr": "border-style", "scope": s_, "value": "none"} for s_ in ("rows", "cols")],
+                                            "dropline": [{"attr": "line-visibility", "value": "off"}]})
+                pane = _sub(_sub(table, "panes"), "pane", {"selection-relaxation-option": "selection-relaxation-allow"})
+                _sub(_sub(pane, "view"), "breakdown", {"value": "auto"})
+                _sub(pane, "mark", {"class": "Line"})
+                mark_style(pane, {"mark-color": th.band_muted if on_band else th.accent, "mark-markers-mode": "none"})
+                _sub(table, "rows", text=measure)
+                _sub(table, "cols", text=period)
+                _sub(ws, "simple-id", {"uuid": _uuid(seed + tsheet)})
+            continue
+
+        ws, table, view, deps = new_sheet(sheet, res.title)
+        calc_column(deps, mc)
+        measure = inst(deps, mc.name, "User", f"usr:{mc.name}:qk", "quantitative")
+        scope = inst(deps, "scope", "None", "none:scope:nk", "nominal")
+        ok = inst(deps, "Calculation_ok", "None", "none:Calculation_ok:nk", "nominal")
+        rows = cols_shelf = ""
+        color = text = sort_on = None
+        top_members: list[str] = []
+        axis: list[dict[str, str]] = []
+        mark: dict[str, str] = {}
+        datalabel: dict[str, str] = {"font-size": "9"}
+        label: list[tuple[dict[str, str], str]] = []
+
+        if res.viz_type == "line":
+            period = inst(deps, "period", trunc, time_qk, "quantitative")
+            rows, cols_shelf = measure, period
+            axis = [{"attr": "title", "class": "0", "field": measure, "scope": "rows", "value": ""},
+                    {"attr": "title", "class": "0", "field": period, "scope": "cols", "value": ""}]
+            mark = {"mark-labels-show": "true", "mark-labels-mode": "line-ends", "mark-labels-line-first": "false",
+                    "mark-labels-cull": "true", "mark-markers-mode": "none"}
             if cats:
-                color = inst(cats[0], "None", f"none:{cats[0]}:nk", "nominal")
-                series_dims[sheet] = cats[0]
+                color = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
+                n_series = len({r[cats[0]] for r in res.rows})
+                series_dims[sheet] = (cats[0], n_series)
+                if n_series <= MAX_END_LABELS:  # label each line at its end; more lines get a legend instead
+                    text = color
+                    datalabel["color-mode"] = "match"
+                else:
+                    mark["mark-labels-show"] = "false"
                 if viz.top_n:
                     top_members = sorted({r[cats[0]] for r in res.rows})
-        elif res.viz_type == "bar":
-            labels = True
-            if has_time and not cats:
-                cols_shelf, rows = inst("period", derivation.replace("-Trunc", ""), time_inst.replace("t", "", 1).replace(":qk", ":ok"), "ordinal"), measure
             else:
-                cat = inst(cats[0], "None", f"none:{cats[0]}:nk", "nominal")
-                rows, cols_shelf, hide_row_label = cat, measure, True
+                text = measure
+                mark["mark-color"] = th.accent
+            label = field_runs({}, text) if text else []
+        elif res.viz_type == "bar":
+            mark = {"mark-labels-show": "true"}
+            datalabel["color"] = th.ink_2
+            if has_time and not cats:
+                period = inst(deps, "period", trunc.replace("-Trunc", ""), time_qk.replace("t", "", 1).replace(":qk", ":ok"), "ordinal")
+                cols_shelf, rows = period, measure
+                axis = [{"attr": "display", "class": "0", "field": measure, "scope": "rows", "value": "false"}]
+            else:
+                cat = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
+                rows, cols_shelf = cat, measure
+                axis = [{"attr": "display", "class": "0", "field": measure, "scope": "cols", "value": "false"}]
                 sort_on = cat if viz.sort != "none" else None
                 if viz.top_n:
                     top_members = sorted({r[cats[0]] for r in res.rows})
                 if viz.highlight_top_n and viz is hl_viz:
-                    color = inst("highlight", "None", "none:highlight:nk", "nominal")
+                    color = inst(deps, "highlight", "None", "none:highlight:nk", "nominal")
                 elif len(cats) > 1:
-                    color = inst(cats[1], "None", f"none:{cats[1]}:nk", "nominal")
-                    series_dims[sheet] = cats[1]
+                    color = inst(deps, cats[1], "None", f"none:{cats[1]}:nk", "nominal")
+                    series_dims[sheet] = (cats[1], len({r[cats[1]] for r in res.rows}))
+            if not color:
+                mark["mark-color"] = th.accent
         else:  # table
-            rows, hide_row_label = inst(cats[0], "None", f"none:{cats[0]}:nk", "nominal"), True
+            rows = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
             text = measure
 
-        _member_filter(view, scope, "[none:scope:nk]", ['"period"' if res.viz_type == "line" or (has_time and not cats) else '"range"'])
-        _member_filter(view, ok, "[none:Calculation_ok:nk]", ["true"])
+        line_like = res.viz_type == "line" or (has_time and not cats)
+        filters = [(scope, "[none:scope:nk]", ['"period"' if line_like else '"range"']), (ok, "[none:Calculation_ok:nk]", ["true"])]
         if top_members:
-            _member_filter(view, q(f"none:{cats[0]}:nk"), f"[none:{cats[0]}:nk]", [f'"{m}"' for m in top_members])
-        if sort_on:
-            _sub(view, "computed-sort", {"column": sort_on, "direction": "DESC" if viz.sort == "desc" else "ASC", "using": measure})
-        slices = _sub(view, "slices")
-        for col in [scope, ok] + ([q(f"none:{cats[0]}:nk")] if top_members else []):
-            _sub(slices, "column", text=col)
-        _sub(view, "aggregation", {"value": "true"})
-
-        tstyle = _sub(table, "style")
-        if hide_row_label:
-            _sub(_sub(tstyle, "style-rule", {"element": "worksheet"}), "format", {"attr": "display-field-labels", "scope": "rows", "value": "false"})
-        if res.viz_type == "kpi_card":
-            # Big, bold number in a wide cell; Rupiah KPIs get an "Rp ... T/M" number format.
-            cell = _sub(tstyle, "style-rule", {"element": "cell"})
-            _sub(cell, "format", {"attr": "width", "value": "420"})
-            _sub(cell, "format", {"attr": "height", "value": "46"})
-            _sub(cell, "format", {"attr": "text-align", "value": "left"})
-            _sub(cell, "format", {"attr": "font-size", "value": "24"})
-            _sub(cell, "format", {"attr": "font-weight", "value": "bold"})
-            _sub(cell, "format", {"attr": "color", "value": INK})
-            if mc.prefix:
-                _sub(cell, "format", {"attr": "text-format", "field": measure, "value": f'*"{mc.prefix}"#,##0.00"{mc.suffix}"'})
+            filters.append((q(f"none:{cats[0]}:nk"), f"[none:{cats[0]}:nk]", [f'"{m}"' for m in top_members]))
+        finish_view(view, filters, (sort_on, "DESC" if viz.sort == "desc" else "ASC", measure) if sort_on else None)
+        clean_style(table, th.card, {"axis": axis})
         pane = _sub(_sub(table, "panes"), "pane", {"selection-relaxation-option": "selection-relaxation-allow"})
         _sub(_sub(pane, "view"), "breakdown", {"value": "auto"})
         _sub(pane, "mark", {"class": MARKS[res.viz_type]})
@@ -369,84 +562,204 @@ def build_twb(
                 _sub(enc, "color", {"column": color})
             if text:
                 _sub(enc, "text", {"column": text})
-        if labels or (res.viz_type == "bar" and not color):
-            rule = _sub(_sub(pane, "style"), "style-rule", {"element": "mark"})
-            if labels:
-                _sub(rule, "format", {"attr": "mark-labels-show", "value": "true"})
-            if not color:
-                _sub(rule, "format", {"attr": "mark-color", "value": TEAL})
+        if label:
+            label_runs(pane, label)
+        if mark:
+            mark_style(pane, mark, datalabel)
         _sub(table, "rows", text=rows or None)
         _sub(table, "cols", text=cols_shelf or None)
         _sub(ws, "simple-id", {"uuid": _uuid(seed + sheet)})
 
-    # --- dashboard -------------------------------------------------------------------
+    # --- dashboard -------------------------------------------------------------------------
     dash_name = _sheet_name(spec.title, used)
-    kpis = [r for r in results if r.viz_type == "kpi_card"]
-    charts = [r for r in results if r.viz_type != "kpi_card"]
     findings = [f for f in (findings or []) if f][:5]
-    height_px = 1200 if len(charts) > 2 else 950
+    W, M, G = 1400, 20, 12  # width, outer margin, gap between cards (px)
+    inner = W - 2 * M
+    placed: list[tuple[int, int, int, int, dict[str, str], dict[str, str] | None, list[tuple[dict[str, str], str]] | None]] = []
+
+    def place(x: int, y: int, w: int, h: int, attrs: dict[str, str], bg: str | None = None,
+              runs: list[tuple[dict[str, str], str]] | None = None, pad: tuple[int, int, int, int] = (0, 0, 0, 0)) -> None:
+        style = None
+        if bg or any(pad):
+            style = ({"background-color": bg} if bg else {}) | {"padding-top": str(pad[0]), "padding-right": str(pad[1]),
+                                                               "padding-bottom": str(pad[2]), "padding-left": str(pad[3])}
+        placed.append((x, y, w, h, attrs, style, runs))
+
+    def wanted_height(r: VizResult) -> int:
+        """Bars and tables grow with their row count so labels never overlap."""
+        if r.viz_type == "line" or not r.rows or not r.columns:
+            return 0
+        n = len({row.get(r.columns[0]["key"]) for row in r.rows})
+        return 70 + n * (26 if r.viz_type == "bar" else 22)
+
+    def header(x: int, y: int, w: int, dark: bool) -> int:
+        ink, sub = (th.band_ink, th.band_muted) if dark else (th.ink, th.ink_2)
+        runs = [({"fontcolor": ink, "fontname": th.font_strong, "fontsize": "20"}, spec.title)]
+        if spec.description:
+            runs.append(({"fontcolor": sub, "fontname": th.font, "fontsize": "10"}, "\n" + spec.description))
+        runs.append(({"fontcolor": "#ffb08a" if dark else th.bad, "fontname": th.font_strong, "fontsize": "9"},
+                     "\nPOC / SYNTHETIC DATA - not actual bank performance"))
+        h = 118 if dark else 100
+        place(x, y, w, h, {"type-v2": "text"}, th.band if dark else th.page, runs, (16, M, 8, M) if dark else (6, 0, 0, 0))
+        return h
+
+    def filter_strip(x: int, y: int, w: int) -> int:
+        if not params:
+            return 0
+        h, cw = 56, min(260, w // len(params))
+        for i, (pname, _d, _f) in enumerate(params):
+            place(x + i * cw, y, cw, h, {"param": f"[Parameters].[{pname}]", "type-v2": "paramctrl", "mode": "compact"},
+                  th.card, pad=(6, 8, 6, 14 if i == 0 else 8))
+        if w - len(params) * cw > 0:
+            place(x + len(params) * cw, y, w - len(params) * cw, h, {"type-v2": "empty"}, th.card)
+        return h + G
+
+    def findings_card(x: int, y: int, w: int, h: int | None = None) -> int:
+        if not findings:
+            return 0
+        cpl = max(30, (w - 36) // 7)
+        lines = sum(-(-len(f) // cpl) for f in findings)
+        need = 48 + 19 * lines + 6 * len(findings)
+        runs = [({"fontcolor": th.ink, "fontname": th.font_strong, "fontsize": "11"}, "Key findings")]
+        runs.append(({"fontcolor": th.muted, "fontname": th.font, "fontsize": "9"}, "  all filters on All"))
+        for f in findings:
+            runs.append(({"fontcolor": th.accent, "fontname": th.font_strong, "fontsize": "10"}, "\n● "))
+            runs.append(({"fontcolor": th.ink_2, "fontname": th.font, "fontsize": "10"}, f))
+        hh = max(h or 0, need)
+        place(x, y, w, hh, {"type-v2": "text"}, th.card, runs, (14, 16, 12, 16))
+        return hh
+
+    def findings_height(w: int) -> int:
+        if not findings:
+            return 0
+        cpl = max(30, (w - 36) // 7)
+        return 48 + 19 * sum(-(-len(f) // cpl) for f in findings) + 6 * len(findings)
+
+    def kpi_card(x: int, y: int, w: int, h: int, r: VizResult, bg: str, pad_l: int = 18) -> None:
+        trend = sheet_names.get(f"{r.viz_id}__trend")
+        th_h = 44 if trend else 0
+        place(x, y, w, h - th_h, {"name": sheet_names[r.viz_id], "show-title": "false"}, bg, pad=(14, 12, 0, pad_l))
+        if trend:
+            place(x, y + h - th_h, w, th_h, {"name": trend, "show-title": "false"}, bg, pad=(0, 18, 10, pad_l))
+
+    def chart_card(x: int, y: int, w: int, h: int, r: VizResult) -> None:
+        sheet = sheet_names[r.viz_id]
+        dim = series_dims.get(sheet)
+        if dim and (r.viz_type != "line" or dim[1] > MAX_END_LABELS):  # few lines are labelled at their ends instead
+            lw = 150
+            place(x, y, w - lw, h, {"name": sheet}, th.card, pad=(12, 4, 10, 14))
+            place(x + w - lw, y, lw, h, {"name": sheet, "param": q(f"none:{dim[0]}:nk"), "type-v2": "color"}, th.card, pad=(40, 10, 10, 4))
+        else:
+            place(x, y, w, h, {"name": sheet}, th.card, pad=(12, 16, 10, 14))
+
+    def chart_grid(x: int, y: int, w: int, per_row: int, h: int) -> int:
+        if not charts:
+            return 0
+        y0 = y
+        for start in range(0, len(charts), per_row):
+            row = charts[start:start + per_row]
+            rh = max([h] + [wanted_height(r) for r in row])  # one height per row keeps the cards aligned
+            cw = (w - G * (len(row) - 1)) // len(row)
+            for col, r in enumerate(row):
+                cx = x + col * (cw + G)
+                chart_card(cx, y, cw if col < len(row) - 1 else x + w - cx, rh, r)
+            y += rh + G
+        return y - y0
+
+    grid_cols = 1 if spec.layout == "detailed_grid" or len(charts) == 1 else 2
+    kpi_h = 150
+    y = 0
+    if recipe != "band":
+        # Tableau stretches the zones' bounding box over the whole dashboard, so outer margins only
+        # survive when something spans the full width: an empty strip on top, the footer at the bottom.
+        place(0, 0, W, M, {"type-v2": "empty"})
+    if recipe == "band":
+        y += header(0, 0, W, True)
+        n = max(1, len(kpis))
+        bw = W // n
+        for i, r in enumerate(kpis):
+            kpi_card(i * bw, y, bw if i < n - 1 else W - i * bw, kpi_h - 10, r, th.band, M + 4 if i == 0 else 18)
+        y += kpi_h - 10 + G + 4
+        y += filter_strip(M, y, inner)
+        if findings:
+            y += findings_card(M, y, inner) + G
+        y += chart_grid(M, y, inner, grid_cols, 330)
+    elif recipe == "rail":
+        y = M
+        y += header(M, y, inner, False)
+        y += filter_strip(M, y, inner)
+        rail_w = 320
+        ry = y
+        for r in kpis:
+            kpi_card(M, ry, rail_w, kpi_h, r, th.card)
+            ry += kpi_h + G
+        if findings:
+            ry += findings_card(M, ry, rail_w) + G
+        cx, cw = M + rail_w + G, inner - rail_w - G
+        per_row = 1 if spec.layout == "detailed_grid" or len(charts) <= 2 else 2
+        ch = max(300, (ry - y - G * (-(-len(charts) // per_row) - 1)) // max(1, -(-len(charts) // per_row))) if charts else 0
+        cy = y + chart_grid(cx, y, cw, per_row, ch)
+        y = max(ry, cy)
+    else:  # executive
+        y = M
+        y += header(M, y, inner, False)
+        y += filter_strip(M, y, inner)
+        side = bool(findings) and len(charts) == 1
+        if kpis:
+            n = len(kpis)
+            bw = 280 if findings and not side else (inner - G * (n - 1)) // n
+            row_h = max(kpi_h, findings_height(inner - n * (bw + G))) if findings and not side else kpi_h
+            for i, r in enumerate(kpis):
+                kpi_card(M + i * (bw + G), y, bw, row_h, r, th.card)
+            if findings and not side:
+                findings_card(M + n * (bw + G), y, inner - n * (bw + G), row_h)
+            y += row_h + G
+        elif findings and not side:
+            y += findings_card(M, y, inner) + G
+        if side:
+            fw, sh = 380, max(440, wanted_height(charts[0]), findings_height(380))
+            chart_card(M, y, inner - fw - G, sh, charts[0])
+            findings_card(M + inner - fw, y, fw, sh)
+            y += sh + G
+        else:
+            y += chart_grid(M, y, inner, grid_cols, 340 if grid_cols == 2 else 380)
+    foot_h = 26 + M // 2
+    place(0, y, W, foot_h, {"type-v2": "text"}, None, [({"fontcolor": th.muted, "fontname": th.font, "fontsize": "8"}, footer)],
+          (2, M, 0, M))
+    height_px = y + foot_h
+
     dashboards = _sub(wb, "dashboards")
     dash = _sub(dashboards, "dashboard", {"name": dash_name})
-    _sub(dash, "style")
-    _sub(dash, "size", {"maxheight": str(height_px), "maxwidth": "1400", "minheight": str(height_px), "minwidth": "1400", "sizing-mode": "fixed"})
+    dstyle = _sub(dash, "style")
+    for el, fmts in (("table", {"background-color": th.page}),
+                     ("parameter-ctrl", {"background-color": th.card}),
+                     ("parameter-ctrl-title", {"font-family": th.font_strong, "font-size": "9", "color": th.ink_2})):
+        rule = _sub(dstyle, "style-rule", {"element": el})
+        for k_, v_ in fmts.items():
+            _sub(rule, "format", {"attr": k_, "value": v_})
+    text_rule = _sub(dstyle, "style-rule", {"element": "dash-text"})  # text zones read top-down, not centred
+    _sub(dash, "size", {"maxheight": str(height_px), "maxwidth": str(W), "minheight": str(height_px), "minwidth": str(W), "sizing-mode": "fixed"})
     zones = _sub(dash, "zones")
     root = _sub(zones, "zone", {"h": "100000", "id": "1", "type-v2": "layout-basic", "w": "100000", "x": "0", "y": "0"})
-    zid = [1]
-    inner = 100000 - 2 * PAD
 
-    def zone(attrs: dict) -> ET.Element:
-        zid[0] += 1
-        return _sub(root, "zone", {k: str(v) for k, v in attrs.items()} | {"id": str(zid[0])})
+    def ux(px: int) -> int:
+        return round(px * 100000 / W)
 
-    def row_of(items: int, y: int, h: int) -> list[tuple[int, int]]:
-        w = inner // items
-        return [(PAD + w * i, w if i < items - 1 else inner - w * i) for i in range(items)]
+    def uy(px: int) -> int:
+        return round(px * 100000 / height_px)
 
-    unit = 24 * 100000 // height_px  # one ~10pt text line (24 px), in zone units
-    y = unit // 2
-    head_h = 4 * unit
-    ft = _sub(zone({"h": head_h, "w": inner, "x": PAD, "y": y, "type-v2": "text"}), "formatted-text")
-    _sub(ft, "run", {"bold": "true", "fontcolor": INK, "fontsize": "18"}, spec.title)
-    _sub(ft, "run", {"fontcolor": INK_2, "fontsize": "10"}, "\n" + (spec.description or ""))
-    _sub(ft, "run", {"fontcolor": "#b42318", "fontsize": "9"}, "\nPOC / SYNTHETIC DATA - not actual bank performance")
-    y += head_h
-    if params:
-        ph = 3 * unit
-        for (x, w), (pname, _d, _f) in zip(row_of(max(len(params), 4), y, ph), params, strict=False):
-            zone({"h": ph, "w": w, "x": x, "y": y, "param": f"[Parameters].[{pname}]", "type-v2": "paramctrl", "mode": "compact"})
-        y += ph
-    if findings:
-        fh = (len(findings) + 1) * unit + unit // 2
-        fft = _sub(zone({"h": fh, "w": inner, "x": PAD, "y": y, "type-v2": "text"}), "formatted-text")
-        _sub(fft, "run", {"bold": "true", "fontcolor": INK, "fontsize": "11"}, "Key findings (all filters on All)")
-        for f in findings:
-            _sub(fft, "run", {"fontcolor": INK, "fontsize": "10"}, "\n- " + f)
-        y += fh
-    if kpis:
-        kh = 4 * unit
-        for (x, w), r in zip(row_of(len(kpis), y, kh), kpis, strict=True):
-            zone({"h": kh, "w": w, "x": x, "y": y, "name": sheet_names[r.viz_id]})
-        y += kh
-    foot_h = 2 * unit
-    if charts:
-        per_row = 1 if spec.layout == "detailed_grid" or len(charts) == 1 else 2
-        n_rows = -(-len(charts) // per_row)
-        ch = (100000 - y - foot_h) // n_rows
-        for i, r in enumerate(charts):
-            row, col = divmod(i, per_row)
-            in_row = min(per_row, len(charts) - row * per_row)
-            x0, width = row_of(in_row, 0, 0)[col]
-            sheet = sheet_names[r.viz_id]
-            if sheet in series_dims:
-                lw = width // 6  # colour legend to the right of the chart
-                zone({"h": ch, "w": width - lw, "x": x0, "y": y + row * ch, "name": sheet})
-                zone({"h": ch, "w": lw, "x": x0 + width - lw, "y": y + row * ch, "name": sheet,
-                      "param": q(f"none:{series_dims[sheet]}:nk"), "type-v2": "color"})
-            else:
-                zone({"h": ch, "w": width, "x": x0, "y": y + row * ch, "name": sheet})
-        y += ch * n_rows
-    _sub(_sub(zone({"h": 100000 - y, "w": inner, "x": PAD, "y": y, "type-v2": "text"}), "formatted-text"), "run",
-         {"fontcolor": INK_2, "fontsize": "8"}, footer)
+    for zid, (x, y0, w, h, attrs, style, runs) in enumerate(placed, start=2):
+        z = _sub(root, "zone", {k_: str(v_) for k_, v_ in attrs.items()} | {
+            "h": str(uy(y0 + h) - uy(y0)), "id": str(zid), "w": str(ux(x + w) - ux(x)), "x": str(ux(x)), "y": str(uy(y0))})
+        if runs:
+            _sub(text_rule, "format", {"attr": "vertical-align", "id": f"dash-text_{zid}", "value": "top"})
+            ft = _sub(z, "formatted-text")
+            for a, t in runs:
+                _sub(ft, "run", a, t)
+        if style:
+            zs = _sub(z, "zone-style")
+            for k_, v_ in ({"border-style": "none", "border-width": "0", "margin": "0"} | style).items():
+                _sub(zs, "format", {"attr": k_, "value": v_})
     _sub(dash, "simple-id", {"uuid": _uuid(seed + "dashboard")})
 
     # Worksheets stay visible: Tableau publishes only visible sheets as views, and publish
@@ -456,8 +769,9 @@ def build_twb(
         _sub(windows, "window", {"class": "worksheet", "name": sheet})
     dw = _sub(windows, "window", {"class": "dashboard", "maximized": "true", "name": dash_name})
     vps = _sub(dw, "viewpoints")
-    for sheet in sheet_names.values():
-        _sub(vps, "viewpoint", {"name": sheet})
+    for vid, sheet in sheet_names.items():
+        r = next((x for x in results if x.viz_id == vid), None)
+        _sub(_sub(vps, "viewpoint", {"name": sheet}), "zoom", {"type": "fit-width" if r and r.viz_type == "table" else "entire-view"})
     _sub(dw, "active", {"id": "-1"})
 
     ET.indent(wb, space="  ")

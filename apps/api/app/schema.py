@@ -17,6 +17,8 @@ VizType = Literal["kpi_card", "line", "bar", "table"]
 Grain = Literal["month", "quarter"]
 OutputDecision = Literal["ANSWER_ONLY", "CHART_OR_ANALYSIS", "DASHBOARD_RECOMMENDATION"]
 Layout = Literal["executive_overview", "detailed_grid"]
+Recipe = Literal["auto", "executive", "band", "rail"]  # Tableau dashboard arrangement (tableau_theme.py)
+Theme = Literal["auto", "slate", "navy", "teal"]  # Tableau dashboard look
 VIZ_TYPES: tuple[str, ...] = ("kpi_card", "line", "bar", "table")
 
 
@@ -71,6 +73,8 @@ class DashboardSpec(Strict):
     filters: list[FilterSpec] = Field(default_factory=list, max_length=6)
     visualizations: list[Visualization] = Field(min_length=1, max_length=8)
     layout: Layout = "executive_overview"
+    recipe: Recipe = "auto"
+    theme: Theme = "auto"
     assumptions: list[str] = Field(default_factory=list, max_length=20)
     warnings: list[str] = Field(default_factory=list, max_length=20)
 
@@ -134,6 +138,8 @@ class DraftPatch(Strict):
     title: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)
     layout: Layout | None = None
+    recipe: Recipe | None = None
+    theme: Theme | None = None
     time_range_start: date | None = None
     time_range_end: date | None = None
     filters: list[FilterSpec] | None = None

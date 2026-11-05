@@ -15,6 +15,8 @@ type Spec = {
   description: string;
   dataset_id: string;
   layout: string;
+  recipe?: string;
+  theme?: string;
   time_range: { start: string; end: string; grain: string; field: string };
   filters: { field: string; op: string; values: string[] }[];
   visualizations: Viz[];
@@ -88,7 +90,7 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [comment, setComment] = useState("");
-  const [form, setForm] = useState<{ title: string; description: string; layout: string; charts: Record<string, string>; remove: string[] }>();
+  const [form, setForm] = useState<{ title: string; description: string; layout: string; recipe: string; theme: string; charts: Record<string, string>; remove: string[] }>();
   const [view, setView] = useState<ViewState | null>(null);
   const [viewLoading, setViewLoading] = useState(false);
 
@@ -168,6 +170,8 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
       title: s.title,
       description: s.description,
       layout: s.layout,
+      recipe: s.recipe ?? "auto",
+      theme: s.theme ?? "auto",
       charts: Object.fromEntries(s.visualizations.map((v) => [v.id, v.type])),
       remove: [],
     });
@@ -181,6 +185,8 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
     if (form.title !== s.title) patch.title = form.title;
     if (form.description !== s.description) patch.description = form.description;
     if (form.layout !== s.layout) patch.layout = form.layout;
+    if (form.recipe !== (s.recipe ?? "auto")) patch.recipe = form.recipe;
+    if (form.theme !== (s.theme ?? "auto")) patch.theme = form.theme;
     const charts = Object.fromEntries(Object.entries(form.charts).filter(([vid, t]) => s.visualizations.find((v) => v.id === vid)?.type !== t));
     if (Object.keys(charts).length) patch.chart_types = charts;
     if (form.remove.length) patch.remove_visualizations = form.remove;
@@ -419,6 +425,22 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
                       <option value="executive_overview">Executive overview (two columns)</option>
                       <option value="detailed_grid">Detailed (one column)</option>
                     </select></label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block"><span className="text-ink-2">Tableau arrangement</span>
+                      <select value={form.recipe} onChange={(e) => setForm({ ...form, recipe: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5">
+                        <option value="auto">Automatic (from the content)</option>
+                        <option value="executive">Executive: KPI row, findings, chart grid</option>
+                        <option value="band">Header band: KPIs on a dark band</option>
+                        <option value="rail">Side rail: KPIs and findings on the left</option>
+                      </select></label>
+                    <label className="block"><span className="text-ink-2">Tableau theme</span>
+                      <select value={form.theme} onChange={(e) => setForm({ ...form, theme: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5">
+                        <option value="auto">Automatic (arrangement default)</option>
+                        <option value="slate">Slate</option>
+                        <option value="navy">Navy</option>
+                        <option value="teal">Teal</option>
+                      </select></label>
+                  </div>
                   <fieldset>
                     <legend className="text-ink-2">Charts</legend>
                     <ul className="mt-1 space-y-1.5">

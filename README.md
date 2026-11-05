@@ -12,7 +12,7 @@ Ask a business question in Bahasa Indonesia or English, get a validated dashboar
 | Synthetic dataset, semantic catalog, 7 KPI definitions (5 credit, 2 deposit) | **Implemented.** Expected values checked independently. |
 | Draft editing, versioning, BA review gate, audit trail, kill switches | **Implemented and tested.** |
 | Tableau REST publishing + read-back verification (TSC, PAT auth) | **Verified on a real Tableau Cloud developer site (2026.3):** publish, read-back of every view, and Tableau-rendered KPI values matching the preview. |
-| Generated `.twbx` workbook | **Deterministic; accepted and rendered by Tableau Cloud.** Dashboard with key findings, KPI cards, trend with legend, labelled breakdowns. |
+| Generated `.twbx` workbook | **Deterministic; accepted and rendered by Tableau Cloud.** Card layout from a fixed design system (3 arrangements × 3 themes, picked from the content or by the reviewer): KPI cards with change vs the previous period and a sparkline, key findings, clean labelled charts. See [docs/tableau/dashboard-design-system.md](docs/tableau/dashboard-design-system.md). |
 | Mandatory E2E (`apps/api/tests_e2e`) | **Passed against a real Tableau Cloud developer site.** It still fails by design when Tableau is missing or mocked. |
 | Recurring-question recommendations (P1) | **Implemented on SIMULATED events**, behind a feature flag. |
 | Adapter for an existing conversational analytics tool, production database adapter, Tableau embedding (P2) | Not implemented (out of scope). |
@@ -77,6 +77,7 @@ apps/api/            FastAPI backend (Python 3.11, Pydantic, SQLAlchemy)
   app/data_provider.py DataProvider interface + SyntheticDataAdapter + KPI engine
   app/dashboards.py    draft lifecycle, review, publish orchestration
   app/tableau_artifact.py  deterministic .twbx generation
+  app/tableau_theme.py     dashboard design tokens, recipes and themes
   app/tableau_publisher.py TableauPublisher: REST (TSC) / mock / not-configured
   app/recommendations.py   recurring-question detection (P1)
   tests/  tests_e2e/
@@ -84,6 +85,7 @@ apps/web/            Next.js 15 + TypeScript + Tailwind + Recharts
 data/seeds/catalog.json        datasets, fields, KPI definitions
 data/synthetic/                generated CSVs + independently computed expected values
 scripts/generate_synthetic.py  deterministic generator
+scripts/render_dashboards.py   dev tool: publish sample dashboards and save Tableau's rendering
 docs/                          architecture, security, Tableau, product, runbooks, API
 ```
 

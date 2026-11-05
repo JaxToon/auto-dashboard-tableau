@@ -301,6 +301,10 @@ def edit_draft(db: Session, c: Container, draft: DashboardDraft, user: UserConte
     if patch.layout is not None:
         spec["layout"] = patch.layout
         changes.append("layout")
+    for key in ("recipe", "theme"):
+        if getattr(patch, key) is not None:
+            spec[key] = getattr(patch, key)
+            changes.append(key)
     if patch.time_range_start is not None:
         spec["time_range"]["start"] = patch.time_range_start.isoformat()
         changes.append("time range")

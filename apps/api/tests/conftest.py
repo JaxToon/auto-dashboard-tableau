@@ -126,7 +126,7 @@ class FakeTableau:
             csv_text = z.read("Data/results/kpi_parts.csv").decode()
         # Calculated fields of the main data source: name -> formula.
         formulas = {c.get("name").strip("[]"): c.find("calculation").get("formula")
-                    for c in root.find("datasources").iter("column") if c.find("calculation") is not None and c.get("name", "").startswith("[Calculation_m")}
+                    for c in root.find("datasources").iter("column") if c.find("calculation") is not None and re.match(r"\[Calculation_[mk]\d+\]", c.get("name", ""))}
         # Like real Tableau, hidden worksheets are not published as views.
         hidden = {w.get("name") for w in root.iter("window") if w.get("class") == "worksheet" and w.get("hidden") == "true"}
         sheets = {}
@@ -134,7 +134,8 @@ class FakeTableau:
             if ws.get("name") in hidden:
                 continue
             text = ws.find(".//encodings/text")
-            calc = re.search(r"usr:(Calculation_m\d+):qk", text.get("column")).group(1) if text is not None else None
+            m = re.search(r"usr:(Calculation_[mk]\d+):qk", text.get("column")) if text is not None else None
+            calc = m.group(1) if m else None
             sheets[ws.get("name")] = formulas.get(calc)
         dash = [d.get("name") for d in root.iter("dashboard")]
         self.published[wid] = {"name": item.name, "project_id": self.project_id if not self.wrong_project else "other", "sheets": sheets, "dash": dash, "csv": csv_text}

@@ -184,7 +184,8 @@ class SyntheticDataAdapter(DataProvider):
         dims = [f.id for f in ds.dimension_fields]
         metrics = [self.catalog.metric(m.metric_id) for m in spec.metrics]
         scopes = [("range", None)]
-        if any(ds.date_field in v.dimension_ids for v in spec.visualizations):
+        # Per-period parts also feed the KPI cards' sparkline and change vs the previous period.
+        if any(ds.date_field in v.dimension_ids or v.type == "kpi_card" for v in spec.visualizations):
             scopes.append(("period", spec.time_range.grain))
         out: list[dict[str, Any]] = []
         for scope, grain in scopes:

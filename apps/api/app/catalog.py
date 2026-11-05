@@ -78,6 +78,7 @@ class Metric(BaseModel):
     calculation_notes: str
     unit: str
     format: Literal["currency", "percent", "number"]
+    higher_is_better: bool = True  # colours the change vs the previous period on KPI cards
     grain: str
     allowed_dimensions: list[str]
     null_handling: str

@@ -221,3 +221,82 @@ def test_rest_rejects_non_allowlisted_project(artifact, tmp_path):
 
 def test_rules_planner_has_no_network_dependency():
     assert RulesPlanner.name == "mock-rules"
+
+
+# --- design system (tableau_theme.py) -------------------------------------------------------
+
+
+def test_style_choice_follows_content_shape_and_overrides():
+    from app.tableau_theme import choose_style
+
+    assert choose_style("auto", "auto", 3, 3)[0] == "band"
+    assert choose_style("auto", "auto", 1, 2)[0] == "rail"
+    assert choose_style("auto", "auto", 0, 1)[0] == "executive"
+    assert choose_style("auto", "auto", 2, 1)[0] == "executive"
+    recipe, theme = choose_style("rail", "slate", 0, 1)
+    assert (recipe, theme.name) == ("rail", "slate")  # explicit choices win
+    assert choose_style("executive", "auto", 3, 3)[1].name == "slate"  # recipe's default theme
+
+
+def _build(c, artifact, **overrides):
+    spec, results, _art, dims, parts = artifact
+    spec = spec.model_copy(update=overrides)
+    return build_twbx(spec, results, c.catalog, dims=dims, components=parts, draft_id="00000000-test", version=1,
+                      footer="POC / SYNTHETIC DATA", findings=["A finding."])
+
+
+def test_every_sheet_is_clean_and_every_zone_is_a_card(artifact):
+    _, root, _ = _twb(artifact[2])
+    for ws in root.iter("worksheet"):
+        rules = {r.get("element"): r for r in ws.find("table/style").findall("style-rule")}
+        assert {f.get("scope") for f in rules["gridline"].findall("format") if f.get("value") == "off"} == {"rows", "cols"}, ws.get("name")
+        assert rules["zeroline"].find("format").get("value") == "off"
+    sheet_zones = [z for z in root.iter("zone") if z.get("name") and z.get("type-v2") is None]
+    for z in sheet_zones:
+        fmts = {f.get("attr"): f.get("value") for f in z.find("zone-style").findall("format")}
+        assert fmts.get("background-color") and int(fmts["padding-left"]) > 0, z.get("name")
+    texts = [z for z in root.iter("zone") if z.get("type-v2") == "text"]
+    top = {f.get("id") for f in root.iter("format") if f.get("attr") == "vertical-align" and f.get("value") == "top"}
+    assert {f"dash-text_{z.get('id')}" for z in texts} <= top
+
+
+def test_kpi_card_shows_change_vs_previous_period_and_sparkline(artifact):
+    spec, results, art, _dims, _parts = artifact
+    _, root, _ = _twb(art)
+    calcs = {c.get("name"): c.find("calculation").get("formula") for c in root.find("datasources").iter("column")
+             if c.find("calculation") is not None}
+    ups = [f for n, f in calcs.items() if n.startswith("[Calculation_u")]
+    assert ups and all("#2025-12-01#" in f and "#2025-11-01#" in f for f in ups)  # last vs previous month
+    kpi = art.sheet_names["kpi_total_outstanding"]
+    ws = next(w for w in root.iter("worksheet") if w.get("name") == kpi)
+    label = "".join(r.text or "" for r in ws.iter("run"))
+    assert "Dec 2025 vs Nov 2025" in label and "Æ\n" in label
+    assert "kpi_total_outstanding__trend" in art.sheet_names  # sparkline published as its own (visible) sheet
+    growth = next(k for k in art.sheet_names if k.startswith("kpi_") and "growth" in k)
+    assert f"{growth}__trend" not in art.sheet_names  # no period-over-period change for a growth rate
+
+
+def test_series_get_the_theme_palette_largest_first(c, artifact):
+    from app.tableau_theme import THEME_SET
+
+    for theme in ("slate", "navy", "teal"):
+        art = _build(c, artifact, theme=theme)
+        _, root, _ = _twb(art)
+        enc = next(e for e in root.iter("encoding") if e.get("field") == "[none:region:nk]")
+        first = enc.find("map")
+        assert first.get("to") == THEME_SET[theme].series[0] and first.find("bucket").text == '"Jakarta"'  # largest region
+        assert any(ci.get("name") == "[none:region:nk]" for ci in root.find("datasources").iter("column-instance"))
+
+
+@pytest.mark.parametrize("recipe", ["executive", "band", "rail"])
+def test_every_recipe_keeps_all_sheets_and_the_synthetic_notice(c, artifact, recipe):
+    art = _build(c, artifact, recipe=recipe)
+    _, root, _ = _twb(art)
+    zone_names = {z.get("name") for z in root.iter("zone") if z.get("name")}
+    assert zone_names == set(art.sheet_names.values())
+    assert "POC / SYNTHETIC DATA - not actual bank performance" in ET.tostring(root, encoding="unicode")
+    size = root.find(".//dashboard/size")
+    assert size.get("minheight") == size.get("maxheight") and int(size.get("maxwidth")) == 1400
+    for z in root.iter("zone"):
+        if z.get("id") != "1":
+            assert 0 <= int(z.get("x")) and int(z.get("x")) + int(z.get("w")) <= 100001, z.attrib

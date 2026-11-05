@@ -138,6 +138,14 @@ def test_edit_creates_version_and_invalidates_approval(clients):
     assert not d["can_publish"]
 
 
+def test_edit_sets_tableau_recipe_and_theme(clients):
+    biz = clients.as_user("demo.business")
+    did = biz.post("/api/v1/dashboards/plan", json={"interpretation_id": ask(biz)["interpretation_id"]}).json()["id"]
+    d = biz.patch(f"/api/v1/dashboards/{did}", json={"recipe": "rail", "theme": "teal"}).json()
+    assert d["spec"]["recipe"] == "rail" and d["spec"]["theme"] == "teal" and d["current_version"] == 2
+    assert biz.patch(f"/api/v1/dashboards/{did}", json={"theme": "neon"}).status_code == 422  # fixed list only
+
+
 def test_edit_cannot_break_chart_rules(clients):
     biz = clients.as_user("demo.business")
     did = biz.post("/api/v1/dashboards/plan", json={"interpretation_id": ask(biz)["interpretation_id"]}).json()["id"]
