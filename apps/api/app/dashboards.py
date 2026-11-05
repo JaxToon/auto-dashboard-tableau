@@ -24,7 +24,7 @@ from .planner import _fmt_month, _period_label
 from .policy import validate_results, validate_spec
 from .runtime import Container
 from .schema import DashboardSpec, DraftPatch, Intent, PreviewRequest
-from .tableau_artifact import build_twbx
+from .tableau_artifact import build_twbx, design_plan
 
 EDITABLE_STATUSES = {"Draft", "Needs Review", "Ready to Publish", "Failed", "Published"}
 REVIEWABLE_VISIBLE = {"Needs Review", "Ready to Publish", "Publishing", "Published", "Failed"}
@@ -257,6 +257,7 @@ def preview(db: Session, c: Container, draft: DashboardDraft, user: UserContext,
         "view": {"customized": customized, "filters": [f.model_dump() for f in spec.filters], "time_range": spec.time_range.model_dump(mode="json")},
         "insights": key_findings(spec, results, c.catalog),
         "results": [r.as_dict() for r in results],
+        "design": design_plan(spec, results, c.catalog).as_dict(),  # what the Tableau workbook will look like
         "result_validation": rr.as_dict(),
         "provenance": {
             "dataset_id": ds.id,

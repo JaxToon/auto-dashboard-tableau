@@ -25,14 +25,134 @@ from datetime import date
 from .catalog import Catalog, Metric
 from .data_provider import VizResult
 from .schema import DashboardSpec
-from .tableau_theme import choose_style
+from .tableau_theme import Theme, choose_style
 
 USER_NS = "http://www.tableausoftware.com/xml/user"
 ET.register_namespace("user", USER_NS)
 REMOTE_TYPES = {"string": "129", "real": "5", "date": "7"}
 ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 MARKS = {"kpi_card": "Text", "line": "Line", "bar": "Bar", "table": "Text"}
-MAX_END_LABELS = 6  # line charts with more series than this get a colour legend instead of end labels
+MAX_END_LABELS = 6  # line charts with more series than this become a heatmap
+FORM_MARKS = {"area": "Area", "spotlight": "Line", "heatmap": "Square", "dots": "Circle", "table": "Text"}
+
+
+def chart_form(viz_type: str, metric: Metric, n_cats: int, has_time: bool, n_series: int, highlighted: bool) -> str:
+    """The visual form for a validated chart. Same data and KPI; only the encoding changes.
+
+    trend without breakdown -> area; few series -> spotlight lines labelled at their ends;
+    many series -> heatmap (member x period); target ratios -> bars against a 100% line;
+    growth rates -> dots against the average; amounts -> ranked bars with the top 3 in the accent;
+    bars over time -> columns with the latest period in the accent.
+    """
+    if viz_type == "line":
+        if not n_cats:
+            return "area"
+        return "spotlight" if n_series <= MAX_END_LABELS else "heatmap"
+    if viz_type == "bar":
+        if has_time and not n_cats:
+            return "columns"
+        if highlighted:
+            return "highlight"
+        if n_cats > 1:
+            return "series_bars"
+        if metric.formula.type == "ratio" and metric.formula.scale == 100 and "target" in f"{metric.id} {metric.name}".lower():
+            return "target"
+        if metric.formula.type == "growth":
+            return "dots"
+        return "ranked"
+    return "table"
+
+
+def _short_title(title: str) -> str:
+    """'Total Credit Outstanding (as of Dec 2025)' -> 'Total Credit Outstanding' (the period is in the header)."""
+    return re.sub(r"\s*\((as of [^)]*|[A-Z][a-z]{2} \d{4}[^)]*)\)\s*$", "", title)
+
+
+def chart_headline(form: str, res: VizResult, metric: Metric, dim_name: str, span: str, grain: str) -> tuple[str, str]:
+    """A short headline that says what the chart shows (computed from the validated rows) and a subtitle."""
+    mid = metric.id
+
+    def fmt(v: float) -> str:
+        return format_value(v, metric.unit)
+
+    rows = [r for r in res.rows if r.get(mid) is not None]
+    key = next((c["key"] for c in res.columns if c["type"] == "string"), None)
+    by = f" by {dim_name}" if dim_name else ""
+    sub = f"{_short_title(metric.name)}{by}  ·  {span}"
+    if not rows:
+        return _short_title(res.title), sub
+    if form in ("area", "columns"):
+        ordered = sorted(rows, key=lambda r: str(r.get("period", "")))
+        first, last = ordered[0][mid], ordered[-1][mid]
+        if form == "area":
+            return f"{_short_title(metric.name)} moved from {fmt(first)} to {fmt(last)}", sub
+        return f"{fmt(last)} in {_period_text(str(ordered[-1]['period']), grain)}", sub
+    if not key:
+        return _short_title(res.title), sub
+    if form in ("spotlight", "heatmap"):
+        lp = max(str(r.get("period", "")) for r in rows)
+        top = max((r for r in rows if str(r.get("period", "")) == lp), key=lambda r: r[mid])
+        head = f"{top[key]} leads at {fmt(top[mid])} in {_period_text(lp, grain)}"
+        return head, sub + ("  ·  darker = higher" if form == "heatmap" else "")
+    if form == "target":
+        below = [r for r in rows if r[mid] < 100]
+        head = f"{len(below)} of {len(rows)} below the 100% target" if below else f"Every {dim_name.lower()} meets the target"
+        return head, sub
+    if form == "dots":
+        best, worst = max(rows, key=lambda r: r[mid]), min(rows, key=lambda r: r[mid])
+        return f"{best[key]} grew fastest ({fmt(best[mid])}), {worst[key]} slowest ({fmt(worst[mid])})", sub
+    top = max(rows, key=lambda r: r[mid])
+    return f"{top[key]} leads with {fmt(top[mid])}", sub
+
+
+HERO_FORMS = ("area", "spotlight", "heatmap", "columns")
+
+
+@dataclass
+class DesignPlan:
+    """Every design decision for one dashboard, shared by the Tableau workbook and the app preview."""
+
+    recipe: str
+    theme: Theme
+    span: str
+    forms: dict[str, str]  # viz id -> chart form (charts only)
+    headlines: dict[str, tuple[str, str]]  # viz id -> (headline, subtitle) for charts; (short label, "") for KPI cards
+    hero: str | None  # viz id of the hero chart
+
+    def as_dict(self) -> dict:
+        t = self.theme
+        return {
+            "recipe": self.recipe, "span": self.span, "hero": self.hero,
+            "theme": {"name": t.name, "page": t.page, "card": t.card, "ink": t.ink, "ink_2": t.ink_2, "muted": t.muted,
+                      "accent": t.accent, "accent_soft": t.accent_soft, "highlight": t.highlight, "other": t.other,
+                      "good": t.good, "bad": t.bad, "band": t.band, "band_ink": t.band_ink, "band_muted": t.band_muted,
+                      "series": list(t.series), "ramp": list(t.ramp())},
+            "vizzes": {vid: {"form": self.forms.get(vid, "kpi_card"), "headline": h, "subtitle": s} for vid, (h, s) in self.headlines.items()},
+        }
+
+
+def design_plan(spec: DashboardSpec, results: list[VizResult], catalog: Catalog) -> DesignPlan:
+    ds = catalog.dataset(spec.dataset_id)
+    kpis = [r for r in results if r.viz_type == "kpi_card"]
+    charts = [r for r in results if r.viz_type != "kpi_card"]
+    has_trend = any(ds.date_field in v.dimension_ids for v in spec.visualizations if v.type != "kpi_card")
+    seed = f"{spec.dataset_id}|{spec.title}|{','.join(v.id for v in spec.visualizations)}"
+    recipe, theme = choose_style(spec.recipe, spec.theme, len(kpis), len(charts), has_trend, seed)
+    tr = spec.time_range
+    span = f"{_period_text(tr.start.isoformat(), tr.grain)} – {_period_text(tr.end.isoformat(), tr.grain)}"
+    hl_viz = next((v for v in spec.visualizations if v.highlight_top_n), None)
+    forms: dict[str, str] = {}
+    headlines: dict[str, tuple[str, str]] = {r.viz_id: (_short_title(r.title), "") for r in kpis}
+    for res in charts:
+        viz = next(v for v in spec.visualizations if v.id == res.viz_id)
+        cats = [d for d in viz.dimension_ids if d != ds.date_field]
+        metric = catalog.metric(viz.metric_ids[0])
+        n_series = len({str(r.get(cats[0])) for r in res.rows}) if cats else 0
+        form = chart_form(res.viz_type, metric, len(cats), ds.date_field in viz.dimension_ids, n_series, viz is hl_viz)
+        forms[viz.id] = form
+        headlines[viz.id] = chart_headline(form, res, metric, ds.field(cats[0]).name if cats else "", span, tr.grain)
+    hero = next((r.viz_id for r in charts if forms[r.viz_id] in HERO_FORMS), charts[0].viz_id if charts else None)
+    return DesignPlan(recipe, theme, span, forms, headlines, hero)
 
 
 @dataclass
@@ -185,7 +305,8 @@ def build_twb(
     _sub(wb, "preferences")
     kpis = [r for r in results if r.viz_type == "kpi_card"]
     charts = [r for r in results if r.viz_type != "kpi_card"]
-    recipe, th = choose_style(spec.recipe, spec.theme, len(kpis), len(charts))
+    plan = design_plan(spec, results, catalog)  # the same decisions the app preview shows
+    recipe, th, span = plan.recipe, plan.theme, plan.span
     wstyle = _sub(wb, "style")
     for el, fmts in (("all", {"font-family": th.font, "color": th.ink_2}), ("worksheet", {"font-size": "9"}),
                      ("title", {"font-family": th.font_strong, "font-size": "11", "color": th.ink}), ("tooltip", {"font-size": "9"})):
@@ -292,31 +413,58 @@ def build_twb(
     for e in extra:
         extra_column(ds_el, *e)
 
-    # Fixed colours per member: top-N emphasis, and the theme's categorical palette for series
-    # (largest series first, so the biggest line gets the accent colour).
+    # --- chart forms: every chart gets the visual form that suits its KPI and shape -----------
+    # Colour-coded forms (top 3, on/below target, latest period) use a calculated category whose
+    # colours are fixed on the data source, so they follow the dashboard filters.
+    forms: dict[str, str] = {}
+    form_calcs: dict[str, tuple[str, str, str | None]] = {}  # viz id -> (calc name, formula, table-calc direction)
     palettes: dict[str, dict[str, str]] = {}
     hl_viz = next((v for v in spec.visualizations if v.highlight_top_n), None)
     if hl_viz:
         palettes["none:highlight:nk"] = {f"Top {hl_viz.highlight_top_n}": th.highlight, "Other": th.other}
-    for res in charts:
+    for i, res in enumerate(charts):
         viz = next(v for v in spec.visualizations if v.id == res.viz_id)
         cats = [d for d in viz.dimension_ids if d != ds_meta.date_field]
-        dim = cats[0] if res.viz_type == "line" and cats else cats[1] if res.viz_type == "bar" and len(cats) > 1 and viz is not hl_viz else None
-        if not dim:
-            continue
-        mid = viz.metric_ids[0]
-        totals: dict[str, float] = {}
-        for r in res.rows:
-            if r.get(dim) is not None:
-                totals[str(r[dim])] = totals.get(str(r[dim]), 0.0) + (r.get(mid) or 0.0)
-        pal = palettes.setdefault(f"none:{dim}:nk", {})
-        for member in sorted(totals, key=lambda x: (-totals[x], x)):
-            pal.setdefault(member, th.series[len(pal) % len(th.series)])
+        mc = calcs[viz.metric_ids[0]]
+        form = forms[viz.id] = plan.forms[viz.id]
+        if form in ("spotlight", "series_bars"):
+            dim = cats[0] if form == "spotlight" else cats[1]
+            totals: dict[str, float] = {}
+            for r in res.rows:
+                if r.get(dim) is not None:
+                    totals[str(r[dim])] = totals.get(str(r[dim]), 0.0) + (r.get(mc.metric.id) or 0.0)
+            pal = palettes.setdefault(f"none:{dim}:nk", {})
+            for j, member in enumerate(sorted(totals, key=lambda x: (-totals[x], x))):
+                if form == "spotlight":  # the leader in the accent, the runner-up in the highlight, the rest grey
+                    pal.setdefault(member, th.accent if j == 0 else th.highlight if j == 1 else th.other)
+                else:
+                    pal.setdefault(member, th.series[len(pal) % len(th.series)])
+        elif form in ("ranked", "target", "columns"):
+            name = f"Calculation_c{i}"
+            if form == "ranked":
+                formula, tc, colours = f'IF RANK({mc.formula}) <= 3 THEN "Top 3" ELSE "Others" END', "Columns", {"Top 3": th.accent, "Others": th.accent_soft}
+            elif form == "target":
+                formula, tc, colours = f'IF {mc.formula} >= 1 THEN "On target" ELSE "Below target" END', None, {"On target": th.accent, "Below target": th.highlight}
+            else:
+                formula, tc, colours = f'IF MAX([period]) = #{last_p}# THEN "Latest" ELSE "Earlier" END', None, {"Latest": th.accent, "Earlier": th.accent_soft}
+            form_calcs[viz.id] = (name, formula, tc)
+            palettes[f"usr:{name}:nk"] = colours
+
+    def category_calc(parent: ET.Element, name: str, formula: str, tc: str | None) -> None:
+        col = _sub(parent, "column", {"caption": name.replace("Calculation_c", "Colour group "), "datatype": "string", "name": f"[{name}]",
+                                      "role": "measure", "type": "nominal"})
+        calc = _sub(col, "calculation", {"class": "tableau", "formula": formula})
+        if tc:
+            _sub(calc, "table-calc", {"ordering-type": tc})
+
+    for name, formula, tc in form_calcs.values():
+        category_calc(ds_el, name, formula, tc)
     if palettes:
         # Tableau applies a data-source colour map only to a column instance declared on the data source.
         for fld in palettes:
-            col = fld.split(":")[1]
-            _sub(ds_el, "column-instance", {"column": f"[{col}]", "derivation": "None", "name": f"[{fld}]", "pivot": "key", "type": "nominal"})
+            prefix, col = fld.split(":")[:2]
+            _sub(ds_el, "column-instance", {"column": f"[{col}]", "derivation": "User" if prefix == "usr" else "None", "name": f"[{fld}]",
+                                            "pivot": "key", "type": "nominal"})
         prule = _sub(_sub(ds_el, "style"), "style-rule", {"element": "mark"})
         for fld, mapping in palettes.items():
             enc = _sub(prule, "encoding", {"attr": "color", "field": f"[{fld}]", "type": "palette"})
@@ -332,11 +480,12 @@ def build_twb(
     on_band = recipe == "band"
     kpi_bg = th.band if on_band else th.card
 
-    def new_sheet(sheet: str, title: str | None = None) -> tuple[ET.Element, ET.Element, ET.Element]:
+    def new_sheet(sheet: str, title: list[tuple[dict[str, str], str]] | None = None) -> tuple[ET.Element, ET.Element, ET.Element, ET.Element]:
         ws = _sub(worksheets, "worksheet", {"name": sheet})
         if title:
             ft = _sub(_sub(_sub(ws, "layout-options"), "title"), "formatted-text")
-            _sub(ft, "run", {"fontcolor": th.ink, "fontname": th.font_strong, "fontsize": "11"}, title)
+            for attrs, text in title:
+                _sub(ft, "run", attrs, text)
         table = _sub(ws, "table")
         view = _sub(table, "view")
         # The data source listed first is the worksheet's primary source; Parameters must not be first.
@@ -367,7 +516,8 @@ def build_twb(
             _sub(slices, "column", text=column)
         _sub(view, "aggregation", {"value": "true"})
 
-    def clean_style(table: ET.Element, bg: str, more: dict[str, list[dict[str, str]]] | None = None) -> None:
+    def clean_style(table: ET.Element, bg: str, more: dict[str, list[dict[str, str]]] | None = None,
+                    ramp: tuple[str, tuple[str, ...]] | None = None) -> None:
         """No gridlines, zero lines, row dividers or axis ticks; field labels hidden (as in every template)."""
         rules: dict[str, list[dict[str, str]]] = {
             "axis": [{"attr": "tick-color", "value": "#00000000"}],
@@ -386,6 +536,11 @@ def build_twb(
                 rule = _sub(st, "style-rule", {"element": el})
                 for f in fmts:
                     _sub(rule, "format", f)
+        if ramp:  # sequential colours for a measure on Colour (heatmap)
+            enc = _sub(_sub(st, "style-rule", {"element": "mark"}), "encoding", {"attr": "color", "field": ramp[0], "type": "custom-interpolated"})
+            pal = _sub(enc, "color-palette", {"custom": "true", "name": "", "type": "ordered-sequential"})
+            for colour in ramp[1]:
+                _sub(pal, "color", text=colour)
 
     def label_runs(pane: ET.Element, runs: list[tuple[dict[str, str], str]]) -> None:
         ft = _sub(_sub(pane, "customized-label"), "formatted-text")
@@ -412,7 +567,6 @@ def build_twb(
         viz = next(v for v in spec.visualizations if v.id == res.viz_id)
         mc = calcs[viz.metric_ids[0]]
         cats = [d for d in viz.dimension_ids if d != ds_meta.date_field]
-        has_time = ds_meta.date_field in viz.dimension_ids
         sheet = _sheet_name(res.title, used)
         sheet_names[viz.id] = sheet
 
@@ -443,7 +597,7 @@ def build_twb(
             lab = th.band_muted if on_band else th.ink_2
             ink = th.band_ink if on_band else th.ink
             good, bad = ("#8be3b0", "#ffb08a") if on_band else (th.good, th.bad)
-            runs = [({"fontcolor": lab, "fontname": th.font, "fontsize": "10"}, res.title + "\n")]
+            runs = [({"fontcolor": lab, "fontname": th.font_strong, "fontsize": "10"}, _short_title(res.title) + "\n")]
             runs += field_runs({"fontcolor": ink, "fontname": th.font_strong, "fontsize": "24"}, value)
             if up:
                 up_c, down_c = (good, bad) if k["good_up"] else (bad, good)
@@ -451,6 +605,8 @@ def build_twb(
                 runs += field_runs({"fontcolor": up_c, "fontname": th.font_strong, "fontsize": "10"}, up)
                 runs += field_runs({"fontcolor": down_c, "fontname": th.font_strong, "fontsize": "10"}, down)
                 runs += [({"fontcolor": lab, "fontname": th.font, "fontsize": "9"}, k["vs"])]
+            else:  # a growth rate has no period-over-period change; show the span it covers
+                runs += [({"fontsize": "6"}, "\u00c6\n"), ({"fontcolor": lab, "fontname": th.font, "fontsize": "9"}, span)]
             label_runs(pane, runs)
             mark_style(pane, {"mark-labels-show": "true"})
             _sub(table, "rows")
@@ -487,7 +643,11 @@ def build_twb(
                 _sub(ws, "simple-id", {"uuid": _uuid(seed + tsheet)})
             continue
 
-        ws, table, view, deps = new_sheet(sheet, res.title)
+        form = forms[viz.id]
+        dim_name = ds_meta.field(cats[0]).name if cats else ""
+        head, sub = chart_headline(form, res, mc.metric, dim_name, span, grain)
+        ws, table, view, deps = new_sheet(sheet, [({"fontcolor": th.ink, "fontname": th.font_strong, "fontsize": "12"}, head + "\n"),
+                                                  ({"fontcolor": th.muted, "fontname": th.font, "fontsize": "9"}, sub)])
         calc_column(deps, mc)
         measure = inst(deps, mc.name, "User", f"usr:{mc.name}:qk", "quantitative")
         scope = inst(deps, "scope", "None", "none:scope:nk", "nominal")
@@ -496,84 +656,102 @@ def build_twb(
         color = text = sort_on = None
         top_members: list[str] = []
         axis: list[dict[str, str]] = []
-        mark: dict[str, str] = {}
-        datalabel: dict[str, str] = {"font-size": "9"}
+        more: dict[str, list[dict[str, str]]] = {}
+        mark: dict[str, str] = {"mark-labels-show": "true"}
+        datalabel: dict[str, str] = {"font-size": "9", "color": th.ink_2}
         label: list[tuple[dict[str, str], str]] = []
+        refline: dict[str, str] | None = None
+        ramp: tuple[str, ...] | None = None
+        hide_measure_axis = {"attr": "display", "class": "0", "field": measure, "value": "false"}
+        if viz.top_n and cats:
+            top_members = sorted({r[cats[0]] for r in res.rows})
+        if form_calcs.get(viz.id):
+            cname = form_calcs[viz.id][0]
+            category_calc(deps, *form_calcs[viz.id])
+            color = inst(deps, cname, "User", f"usr:{cname}:nk", "nominal")
 
-        if res.viz_type == "line":
+        if form in ("area", "spotlight"):
             period = inst(deps, "period", trunc, time_qk, "quantitative")
             rows, cols_shelf = measure, period
             axis = [{"attr": "title", "class": "0", "field": measure, "scope": "rows", "value": ""},
                     {"attr": "title", "class": "0", "field": period, "scope": "cols", "value": ""}]
-            mark = {"mark-labels-show": "true", "mark-labels-mode": "line-ends", "mark-labels-line-first": "false",
-                    "mark-labels-cull": "true", "mark-markers-mode": "none"}
-            if cats:
-                color = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
-                n_series = len({r[cats[0]] for r in res.rows})
-                series_dims[sheet] = (cats[0], n_series)
-                if n_series <= MAX_END_LABELS:  # label each line at its end; more lines get a legend instead
-                    text = color
-                    datalabel["color-mode"] = "match"
-                else:
-                    mark["mark-labels-show"] = "false"
-                if viz.top_n:
-                    top_members = sorted({r[cats[0]] for r in res.rows})
-            else:
+            mark |= {"mark-labels-mode": "line-ends", "mark-labels-line-first": "false", "mark-labels-cull": "true", "mark-markers-mode": "none"}
+            if form == "area":
                 text = measure
-                mark["mark-color"] = th.accent
-            label = field_runs({}, text) if text else []
-        elif res.viz_type == "bar":
-            mark = {"mark-labels-show": "true"}
-            datalabel["color"] = th.ink_2
-            if has_time and not cats:
-                period = inst(deps, "period", trunc.replace("-Trunc", ""), time_qk.replace("t", "", 1).replace(":qk", ":ok"), "ordinal")
-                cols_shelf, rows = period, measure
-                axis = [{"attr": "display", "class": "0", "field": measure, "scope": "rows", "value": "false"}]
-            else:
-                cat = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
-                rows, cols_shelf = cat, measure
-                axis = [{"attr": "display", "class": "0", "field": measure, "scope": "cols", "value": "false"}]
-                sort_on = cat if viz.sort != "none" else None
-                if viz.top_n:
-                    top_members = sorted({r[cats[0]] for r in res.rows})
-                if viz.highlight_top_n and viz is hl_viz:
-                    color = inst(deps, "highlight", "None", "none:highlight:nk", "nominal")
-                elif len(cats) > 1:
-                    color = inst(deps, cats[1], "None", f"none:{cats[1]}:nk", "nominal")
-                    series_dims[sheet] = (cats[1], len({r[cats[1]] for r in res.rows}))
-            if not color:
-                mark["mark-color"] = th.accent
-        else:  # table
+                mark |= {"mark-color": th.accent, "mark-transparency": "170"}
+                datalabel |= {"color": th.ink, "font-size": "10"}
+            else:  # one line per member, labelled at its end; the leader stands out
+                color = text = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
+                datalabel["color-mode"] = "match"
+                mark["size"] = "1.2"
+            label = field_runs({}, text)
+        elif form == "heatmap":  # many members over time: one row each, colour = value
+            cat = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
+            period = inst(deps, "period", "Month" if grain == "month" else "Quarter", "mn:period:ok" if grain == "month" else "qr:period:ok", "ordinal")
+            rows, cols_shelf, sort_on = cat, period, cat
+            color = text = measure
+            ramp = th.ramp()
+            datalabel = {"font-size": "8", "color": th.ink}
+            more["label"] = [{"attr": "text-format", "field": period, "value": "iLLL"}] if grain == "month" else []
+            more["header"] = [{"attr": "height", "field": period, "value": "22"}]
+        elif form == "columns":  # one bar per period, the latest one in the accent
+            period = inst(deps, "period", "Month" if grain == "month" else "Quarter", "mn:period:ok" if grain == "month" else "qr:period:ok", "ordinal")
+            cols_shelf, rows = period, measure
+            axis = [hide_measure_axis | {"scope": "rows"}]
+            more["label"] = [{"attr": "text-format", "field": period, "value": "iLLL"}] if grain == "month" else []
+        elif form == "table":
             rows = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
             text = measure
+        else:  # ranked / target / dots / highlight / series bars: one row per member, value labelled
+            cat = inst(deps, cats[0], "None", f"none:{cats[0]}:nk", "nominal")
+            rows, cols_shelf = cat, measure
+            axis = [hide_measure_axis | {"scope": "cols"}]
+            sort_on = cat if viz.sort != "none" or form in ("target", "dots") else None
+            if form == "target":  # 100% target line; below-target members in the highlight colour
+                refline = {"formula": "constant", "value": "1", "label": "Target 100%", "label-type": "custom"}
+            elif form == "dots":  # growth as dots against the average
+                refline = {"formula": "average", "label": "Average", "label-type": "custom"}
+                mark |= {"mark-color": th.accent, "size": "1.8"}
+            elif form == "highlight":
+                color = inst(deps, "highlight", "None", "none:highlight:nk", "nominal")
+            elif form == "series_bars":
+                color = inst(deps, cats[1], "None", f"none:{cats[1]}:nk", "nominal")
+                series_dims[sheet] = (cats[1], len({r[cats[1]] for r in res.rows}))
+            if not color and form != "dots":
+                mark["mark-color"] = th.accent
+        if refline:
+            more["refline"] = [{"attr": "stroke-color", "value": th.ink_2}, {"attr": "stroke-size", "value": "1"},
+                               {"attr": "fill-above", "value": "#00000000"}, {"attr": "fill-below", "value": "#00000000"}]
 
-        line_like = res.viz_type == "line" or (has_time and not cats)
+        line_like = form in ("area", "spotlight", "heatmap", "columns")
         filters = [(scope, "[none:scope:nk]", ['"period"' if line_like else '"range"']), (ok, "[none:Calculation_ok:nk]", ["true"])]
         if top_members:
             filters.append((q(f"none:{cats[0]}:nk"), f"[none:{cats[0]}:nk]", [f'"{m}"' for m in top_members]))
-        finish_view(view, filters, (sort_on, "DESC" if viz.sort == "desc" else "ASC", measure) if sort_on else None)
-        clean_style(table, th.card, {"axis": axis})
+        finish_view(view, filters, (sort_on, "ASC" if viz.sort == "asc" else "DESC", measure) if sort_on else None)
+        clean_style(table, th.card, {"axis": axis, **more}, ramp=(measure, ramp) if ramp else None)
         pane = _sub(_sub(table, "panes"), "pane", {"selection-relaxation-option": "selection-relaxation-allow"})
         _sub(_sub(pane, "view"), "breakdown", {"value": "auto"})
-        _sub(pane, "mark", {"class": MARKS[res.viz_type]})
+        _sub(pane, "mark", {"class": FORM_MARKS.get(form, "Bar")})
         if color or text:
             enc = _sub(pane, "encodings")
             if color:
                 _sub(enc, "color", {"column": color})
             if text:
                 _sub(enc, "text", {"column": text})
+        if refline:
+            _sub(pane, "reference-line", {"axis-column": measure, "enable-instant-analytics": "true", "id": "refline0", "scope": "per-table",
+                                          "tooltip-type": "none", "value-column": measure, "z-order": "1"} | refline)
         if label:
             label_runs(pane, label)
-        if mark:
-            mark_style(pane, mark, datalabel)
+        mark_style(pane, mark, datalabel)
         _sub(table, "rows", text=rows or None)
         _sub(table, "cols", text=cols_shelf or None)
         _sub(ws, "simple-id", {"uuid": _uuid(seed + sheet)})
 
-    # --- dashboard -------------------------------------------------------------------------
+    # --- dashboard: a one-screen summary on top, the detail below ------------------------------
     dash_name = _sheet_name(spec.title, used)
     findings = [f for f in (findings or []) if f][:5]
-    W, M, G = 1400, 20, 12  # width, outer margin, gap between cards (px)
+    W, M, G = 1600, 24, 14  # width, outer margin, gap between cards (px)
     inner = W - 2 * M
     placed: list[tuple[int, int, int, int, dict[str, str], dict[str, str] | None, list[tuple[dict[str, str], str]] | None]] = []
 
@@ -586,78 +764,76 @@ def build_twb(
         placed.append((x, y, w, h, attrs, style, runs))
 
     def wanted_height(r: VizResult) -> int:
-        """Bars and tables grow with their row count so labels never overlap."""
-        if r.viz_type == "line" or not r.rows or not r.columns:
+        """Rows of bars, dots or heatmap cells get enough height that labels never overlap."""
+        form = forms.get(r.viz_id, "")
+        if form in ("area", "spotlight", "columns") or not r.rows or not r.columns:
             return 0
-        n = len({row.get(r.columns[0]["key"]) for row in r.rows})
-        return 70 + n * (26 if r.viz_type == "bar" else 22)
+        key = next((c["key"] for c in r.columns if c["type"] == "string"), r.columns[0]["key"])
+        n = len({row.get(key) for row in r.rows})
+        return 96 + n * (30 if form == "heatmap" else 27 if form != "table" else 22)
 
     def header(x: int, y: int, w: int, dark: bool) -> int:
         ink, sub = (th.band_ink, th.band_muted) if dark else (th.ink, th.ink_2)
-        runs = [({"fontcolor": ink, "fontname": th.font_strong, "fontsize": "20"}, spec.title)]
-        if spec.description:
-            runs.append(({"fontcolor": sub, "fontname": th.font, "fontsize": "10"}, "\n" + spec.description))
-        runs.append(({"fontcolor": "#ffb08a" if dark else th.bad, "fontname": th.font_strong, "fontsize": "9"},
-                     "\nPOC / SYNTHETIC DATA - not actual bank performance"))
-        h = 118 if dark else 100
-        place(x, y, w, h, {"type-v2": "text"}, th.band if dark else th.page, runs, (16, M, 8, M) if dark else (6, 0, 0, 0))
+        runs = [({"fontcolor": th.band_muted if dark else th.accent, "fontname": th.font_strong, "fontsize": "9"}, ds_meta.name.upper() + "\n"),
+                ({"fontcolor": ink, "fontname": th.font_strong, "fontsize": "22"}, spec.title + "\n"),
+                ({"fontcolor": sub, "fontname": th.font, "fontsize": "10"}, f"{span}   ·   "),
+                ({"fontcolor": "#ffb08a" if dark else th.bad, "fontname": th.font_strong, "fontsize": "9"}, "POC / SYNTHETIC DATA - not actual bank performance")]
+        h = 112 if dark else 96
+        place(x, y, w, h, {"type-v2": "text"}, th.band if dark else th.page, runs, (18, M, 8, M) if dark else (6, 0, 0, 0))
         return h
 
     def filter_strip(x: int, y: int, w: int) -> int:
         if not params:
             return 0
-        h, cw = 56, min(260, w // len(params))
+        h, cw = 58, min(280, w // len(params))
         for i, (pname, _d, _f) in enumerate(params):
             place(x + i * cw, y, cw, h, {"param": f"[Parameters].[{pname}]", "type-v2": "paramctrl", "mode": "compact"},
-                  th.card, pad=(6, 8, 6, 14 if i == 0 else 8))
+                  th.card, pad=(8, 10, 6, 16 if i == 0 else 10))
         if w - len(params) * cw > 0:
             place(x + len(params) * cw, y, w - len(params) * cw, h, {"type-v2": "empty"}, th.card)
         return h + G
 
-    def findings_card(x: int, y: int, w: int, h: int | None = None) -> int:
-        if not findings:
-            return 0
-        cpl = max(30, (w - 36) // 7)
-        lines = sum(-(-len(f) // cpl) for f in findings)
-        need = 48 + 19 * lines + 6 * len(findings)
-        runs = [({"fontcolor": th.ink, "fontname": th.font_strong, "fontsize": "11"}, "Key findings")]
-        runs.append(({"fontcolor": th.muted, "fontname": th.font, "fontsize": "9"}, "  all filters on All"))
-        for f in findings:
-            runs.append(({"fontcolor": th.accent, "fontname": th.font_strong, "fontsize": "10"}, "\n● "))
-            runs.append(({"fontcolor": th.ink_2, "fontname": th.font, "fontsize": "10"}, f))
-        hh = max(h or 0, need)
-        place(x, y, w, hh, {"type-v2": "text"}, th.card, runs, (14, 16, 12, 16))
-        return hh
-
     def findings_height(w: int) -> int:
         if not findings:
             return 0
-        cpl = max(30, (w - 36) // 7)
-        return 48 + 19 * sum(-(-len(f) // cpl) for f in findings) + 6 * len(findings)
+        cpl = max(28, (w - 40) // 7)
+        return 56 + 20 * sum(-(-len(f) // cpl) for f in findings) + 8 * len(findings)
+
+    def findings_card(x: int, y: int, w: int, h: int | None = None) -> int:
+        if not findings:
+            return 0
+        runs = [({"fontcolor": th.accent, "fontname": th.font_strong, "fontsize": "9"}, "WHAT STANDS OUT\n"),
+                ({"fontcolor": th.muted, "fontname": th.font, "fontsize": "8"}, "Computed with every filter on All")]
+        for f in findings:
+            runs.append(({"fontcolor": th.accent, "fontname": th.font_strong, "fontsize": "11"}, "\n\n—  "))
+            runs.append(({"fontcolor": th.ink, "fontname": th.font, "fontsize": "10"}, f))
+        hh = max(h or 0, findings_height(w))
+        place(x, y, w, hh, {"type-v2": "text"}, th.card, runs, (16, 18, 12, 18))
+        return hh
 
     def kpi_card(x: int, y: int, w: int, h: int, r: VizResult, bg: str, pad_l: int = 18) -> None:
         trend = sheet_names.get(f"{r.viz_id}__trend")
-        th_h = 44 if trend else 0
-        place(x, y, w, h - th_h, {"name": sheet_names[r.viz_id], "show-title": "false"}, bg, pad=(14, 12, 0, pad_l))
-        if trend:
-            place(x, y + h - th_h, w, th_h, {"name": trend, "show-title": "false"}, bg, pad=(0, 18, 10, pad_l))
+        if trend:  # number on the left, sparkline on the right
+            sw = max(120, int(w * 0.38))
+            place(x, y, w - sw, h, {"name": sheet_names[r.viz_id], "show-title": "false"}, bg, pad=(14, 6, 6, pad_l))
+            place(x + w - sw, y, sw, h, {"name": trend, "show-title": "false"}, bg, pad=(34, 18, 18, 6))
+        else:
+            place(x, y, w, h, {"name": sheet_names[r.viz_id], "show-title": "false"}, bg, pad=(14, 12, 6, pad_l))
 
     def chart_card(x: int, y: int, w: int, h: int, r: VizResult) -> None:
         sheet = sheet_names[r.viz_id]
         dim = series_dims.get(sheet)
-        if dim and (r.viz_type != "line" or dim[1] > MAX_END_LABELS):  # few lines are labelled at their ends instead
+        if dim:
             lw = 150
-            place(x, y, w - lw, h, {"name": sheet}, th.card, pad=(12, 4, 10, 14))
-            place(x + w - lw, y, lw, h, {"name": sheet, "param": q(f"none:{dim[0]}:nk"), "type-v2": "color"}, th.card, pad=(40, 10, 10, 4))
+            place(x, y, w - lw, h, {"name": sheet}, th.card, pad=(14, 4, 12, 16))
+            place(x + w - lw, y, lw, h, {"name": sheet, "param": q(f"none:{dim[0]}:nk"), "type-v2": "color"}, th.card, pad=(52, 10, 10, 4))
         else:
-            place(x, y, w, h, {"name": sheet}, th.card, pad=(12, 16, 10, 14))
+            place(x, y, w, h, {"name": sheet}, th.card, pad=(14, 18, 12, 16))
 
-    def chart_grid(x: int, y: int, w: int, per_row: int, h: int) -> int:
-        if not charts:
-            return 0
+    def chart_grid(x: int, y: int, w: int, items: list[VizResult], per_row: int, h: int) -> int:
         y0 = y
-        for start in range(0, len(charts), per_row):
-            row = charts[start:start + per_row]
+        for start in range(0, len(items), per_row):
+            row = items[start:start + per_row]
             rh = max([h] + [wanted_height(r) for r in row])  # one height per row keeps the cards aligned
             cw = (w - G * (len(row) - 1)) // len(row)
             for col, r in enumerate(row):
@@ -666,66 +842,66 @@ def build_twb(
             y += rh + G
         return y - y0
 
-    grid_cols = 1 if spec.layout == "detailed_grid" or len(charts) == 1 else 2
-    kpi_h = 150
+    # The hero is the trend (or the first chart); everything else is detail.
+    hero = next((r for r in charts if r.viz_id == plan.hero), None)
+    detail = [r for r in charts if r is not hero]
+    kpi_h, hero_h, side_w = 118, 420, 400
     y = 0
     if recipe != "band":
         # Tableau stretches the zones' bounding box over the whole dashboard, so outer margins only
         # survive when something spans the full width: an empty strip on top, the footer at the bottom.
         place(0, 0, W, M, {"type-v2": "empty"})
+        y = M
     if recipe == "band":
         y += header(0, 0, W, True)
         n = max(1, len(kpis))
         bw = W // n
         for i, r in enumerate(kpis):
-            kpi_card(i * bw, y, bw if i < n - 1 else W - i * bw, kpi_h - 10, r, th.band, M + 4 if i == 0 else 18)
-        y += kpi_h - 10 + G + 4
+            kpi_card(i * bw, y, bw if i < n - 1 else W - i * bw, kpi_h, r, th.band, M + 4 if i == 0 else 22)
+        y += (kpi_h + 10 if kpis else 0) + G
         y += filter_strip(M, y, inner)
-        if findings:
-            y += findings_card(M, y, inner) + G
-        y += chart_grid(M, y, inner, grid_cols, 330)
-    elif recipe == "rail":
-        y = M
+    else:
         y += header(M, y, inner, False)
         y += filter_strip(M, y, inner)
-        rail_w = 320
-        ry = y
-        for r in kpis:
-            kpi_card(M, ry, rail_w, kpi_h, r, th.card)
-            ry += kpi_h + G
+    if recipe == "rail" and kpis:  # KPIs stacked on the left, the hero beside them, findings on the right
+        col_w = 360
+        for i, r in enumerate(kpis):
+            kpi_card(M, y + i * (kpi_h + G), col_w, kpi_h, r, th.card)
+        stack = len(kpis) * (kpi_h + G) - G
+        hh = max(hero_h, stack)
+        mid_w = inner - col_w - G - (side_w + G if findings else 0)
+        if hero:
+            chart_card(M + col_w + G, y, mid_w, max(hh, wanted_height(hero)), hero)
         if findings:
-            ry += findings_card(M, ry, rail_w) + G
-        cx, cw = M + rail_w + G, inner - rail_w - G
-        per_row = 1 if spec.layout == "detailed_grid" or len(charts) <= 2 else 2
-        ch = max(300, (ry - y - G * (-(-len(charts) // per_row) - 1)) // max(1, -(-len(charts) // per_row))) if charts else 0
-        cy = y + chart_grid(cx, y, cw, per_row, ch)
-        y = max(ry, cy)
-    else:  # executive
-        y = M
-        y += header(M, y, inner, False)
-        y += filter_strip(M, y, inner)
-        side = bool(findings) and len(charts) == 1
-        if kpis:
+            findings_card(M + inner - side_w, y, side_w, max(hh, wanted_height(hero) if hero else 0))
+        y += max(hh, wanted_height(hero) if hero else 0) + G
+    else:
+        if recipe != "band" and kpis:
             n = len(kpis)
-            bw = 280 if findings and not side else (inner - G * (n - 1)) // n
-            row_h = max(kpi_h, findings_height(inner - n * (bw + G))) if findings and not side else kpi_h
+            bw = (inner - G * (n - 1)) // n
             for i, r in enumerate(kpis):
-                kpi_card(M + i * (bw + G), y, bw, row_h, r, th.card)
-            if findings and not side:
-                findings_card(M + n * (bw + G), y, inner - n * (bw + G), row_h)
-            y += row_h + G
-        elif findings and not side:
+                kpi_card(M + i * (bw + G), y, bw if i < n - 1 else inner - i * (bw + G), kpi_h, r, th.card)
+            y += kpi_h + G
+        if hero:
+            hh = max(hero_h, wanted_height(hero), findings_height(side_w) if findings else 0)
+            chart_card(M, y, inner - (side_w + G if findings else 0), hh, hero)
+            if findings:
+                findings_card(M + inner - side_w, y, side_w, hh)
+            y += hh + G
+        elif findings:
             y += findings_card(M, y, inner) + G
-        if side:
-            fw, sh = 380, max(440, wanted_height(charts[0]), findings_height(380))
-            chart_card(M, y, inner - fw - G, sh, charts[0])
-            findings_card(M + inner - fw, y, fw, sh)
-            y += sh + G
-        else:
-            y += chart_grid(M, y, inner, grid_cols, 340 if grid_cols == 2 else 380)
-    foot_h = 26 + M // 2
+    if detail:
+        dims_txt = ", ".join(sorted({ds_meta.field(d).name for r in detail for v in spec.visualizations if v.id == r.viz_id
+                                     for d in v.dimension_ids if d != ds_meta.date_field})) or "period"
+        place(M, y + 6, inner, 52, {"type-v2": "text"}, None,
+              [({"fontcolor": th.ink, "fontname": th.font_strong, "fontsize": "15"}, "Detail\n"),
+               ({"fontcolor": th.muted, "fontname": th.font, "fontsize": "9"}, f"Every KPI broken down by {dims_txt}  ·  scroll for more")])
+        y += 58 + 6
+        per_row = 1 if spec.layout == "detailed_grid" or len(detail) == 1 else 2
+        y += chart_grid(M, y, inner, detail, per_row, 340)
+    foot_h = 30
     place(0, y, W, foot_h, {"type-v2": "text"}, None, [({"fontcolor": th.muted, "fontname": th.font, "fontsize": "8"}, footer)],
-          (2, M, 0, M))
+          (4, M, 0, M))
     height_px = y + foot_h
 
     dashboards = _sub(wb, "dashboards")

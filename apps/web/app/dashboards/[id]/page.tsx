@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { formatPeriod, formatTime } from "@/lib/format";
 import { can, useSession } from "@/components/Shell";
 import { DashboardPreview, VizResult } from "@/components/Charts";
+import { DesignedDashboard, type Design } from "@/components/DesignedDashboard";
 import { Button, ErrorNote, StatusPill } from "@/components/ui";
 import { FilterBar, FilterField, ViewState } from "@/components/FilterBar";
 
@@ -53,6 +54,7 @@ type Preview = {
   view: { customized: boolean; filters: { field: string; values: string[] }[]; time_range: { start: string; end: string } };
   insights: string[];
   results: VizResult[];
+  design?: Design;
   result_validation: { valid: boolean; warnings: string[] };
   provenance: {
     dataset_name: string;
@@ -262,7 +264,7 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
             </span>
             {preview && <span className="text-xs text-ink-3">Data up to {formatPeriod(preview.provenance.freshness.latest_period)} (synthetic snapshot)</span>}
           </div>
-          {preview && preview.insights.length > 0 && (
+          {preview && !preview.design && preview.insights.length > 0 && (
             <section aria-label="Key findings" className="mb-5 border-l-4 border-teal bg-surface px-5 py-4 rounded-r-lg">
               <h2 className="font-semibold">Key findings</h2>
               <ul className="mt-2 space-y-1.5 text-[15px] leading-snug">
@@ -273,7 +275,11 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
               <p className="mt-2 text-xs text-ink-3">Calculated from the validated results shown below, using the approved KPI definitions.</p>
             </section>
           )}
-          {preview ? <DashboardPreview results={preview.results} layout={draft.spec.layout} /> : <p className="text-ink-3">Building preview…</p>}
+          {preview ? (
+            preview.design
+              ? <DesignedDashboard results={preview.results} insights={preview.insights} design={preview.design} layout={draft.spec.layout} />
+              : <DashboardPreview results={preview.results} layout={draft.spec.layout} />
+          ) : <p className="text-ink-3">Building preview…</p>}
 
           {preview && (
             <details className="mt-8 rounded-lg border border-line bg-surface" open>
@@ -429,16 +435,19 @@ export default function DashboardPage({ params }: { params: Promise<{ id: string
                     <label className="block"><span className="text-ink-2">Tableau arrangement</span>
                       <select value={form.recipe} onChange={(e) => setForm({ ...form, recipe: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5">
                         <option value="auto">Automatic (from the content)</option>
-                        <option value="executive">Executive: KPI row, findings, chart grid</option>
-                        <option value="band">Header band: KPIs on a dark band</option>
-                        <option value="rail">Side rail: KPIs and findings on the left</option>
+                        <option value="executive">KPI strip, then the main chart with findings</option>
+                        <option value="band">KPIs on a dark header band</option>
+                        <option value="rail">KPIs in a left column beside the main chart</option>
                       </select></label>
                     <label className="block"><span className="text-ink-2">Tableau theme</span>
                       <select value={form.theme} onChange={(e) => setForm({ ...form, theme: e.target.value })} className="mt-1 w-full rounded-md border border-line px-2 py-1.5">
-                        <option value="auto">Automatic (arrangement default)</option>
+                        <option value="auto">Automatic (varies per dashboard)</option>
                         <option value="slate">Slate</option>
                         <option value="navy">Navy</option>
                         <option value="teal">Teal</option>
+                        <option value="plum">Plum</option>
+                        <option value="forest">Forest</option>
+                        <option value="sunset">Sunset</option>
                       </select></label>
                   </div>
                   <fieldset>

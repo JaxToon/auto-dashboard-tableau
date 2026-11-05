@@ -1,39 +1,63 @@
 # Tableau dashboard design system
 
-The generated workbook (`apps/api/app/tableau_artifact.py`) follows a small, fixed design system
-defined in `apps/api/app/tableau_theme.py`. The rules were distilled from well-regarded business
-dashboard templates (Tableau Accelerators and business-themed Viz of the Day dashboards), by
-parsing their workbook XML and looking at their thumbnails. No template content is copied or
-shipped; only the generic rules below are used. Reference workbooks are kept outside the repository.
+The generated workbook (`apps/api/app/tableau_artifact.py`) is laid out by a small composer that
+reads the shape of the validated content and picks, from fixed and tested building blocks, the
+chart form for every KPI, the arrangement and the theme (`apps/api/app/tableau_theme.py`).
 
-## Rules every dashboard follows
+The rules were distilled from well-regarded business dashboard templates (Tableau Accelerators
+and business-themed Viz of the Day dashboards), by parsing their workbook XML and looking at their
+thumbnails. No template content is copied or shipped. Reference workbooks are kept outside the
+repository.
 
-| Area | Rule |
+## Page structure: summary, then detail
+
+1. **Header**: dataset label, title, period, and the "POC / SYNTHETIC DATA" notice.
+2. **Filters**: one compact control per filterable dimension.
+3. **KPI cards (BANs)**: short label, big value, change vs the previous period (▲/▼, coloured by
+   whether the change is good, using the catalog's `higher_is_better`), and a sparkline. A growth
+   rate shows the period it covers instead of a change.
+4. **Hero chart**: the trend (or the first chart), next to a **What stands out** panel with the
+   deterministic findings.
+5. **Detail**: every other chart in a card grid below the summary. Cards grow with the number of
+   members, so labels never overlap.
+
+## Chart forms
+
+The planner still produces the validated `line` / `bar` / `table` visualizations. The composer
+only changes the visual encoding, never the data or the KPI formula:
+
+| Content | Form |
 |---|---|
-| Page | Light grey page, white cards with 12-16 px padding, 12 px gaps, 20 px outer margin, fixed 1400 px width; height follows the content. |
-| Type | Tableau's own family: *Tableau Semibold* for titles and KPI values, *Tableau Book* for text. Title 20 pt, card titles 11 pt, body 9-10 pt, KPI value 24 pt. |
-| Colour | Neutral greys plus one accent colour. A second colour only for emphasis (top N) or for the direction of a change. Series use the theme palette, largest series first. |
-| Worksheets | No gridlines, zero lines, row/column dividers or axis ticks; field labels hidden. Bars show their value as a label and hide the value axis. Axis titles are removed; the card title says what is measured. |
-| Lines | Up to 6 series are labelled at the line ends (no legend); more series get a compact legend inside the card. |
-| KPI cards (BANs) | Short label, big value, change vs the previous period (▲/▼, coloured by whether the change is good, using the catalog's `higher_is_better`), and a sparkline. Growth-rate KPIs show no period-over-period change. |
-| Findings | A "Key findings" card with the deterministic insights (all filters on All). |
-| Compliance | The "POC / SYNTHETIC DATA" notice is part of every header, and the provenance footer is on every dashboard. |
+| Trend without breakdown | Area chart with the latest value labelled |
+| Trend by up to 6 members | Spotlight lines: the leader in the accent, the runner-up in the highlight, the rest grey; each line labelled at its end |
+| Trend by more members | Heatmap (member × period, darker = higher), sorted by value |
+| Achievement vs target (ratio KPI) | Bars against a 100% target line; members below target in the highlight colour |
+| Growth rate by member | Dots against an average line |
+| Amount by member | Ranked bars, the top 3 in the accent (a table calculation, so it follows the filters) |
+| Amount over time | Columns, the latest period in the accent |
 
-All values stay computed by Tableau from the embedded additive KPI parts, so the change and the
-sparkline follow the dashboard filters like every other number.
+Each chart has a short headline computed from the validated rows ("Jakarta leads with Rp 2.15 T",
+"6 of 8 below the 100% target") and a subtitle with the KPI and the period.
 
-## Recipes (arrangement) and themes (look)
+Every worksheet is clean: no gridlines, zero lines, row dividers or axis ticks; values labelled on
+the marks; Tableau's own fonts.
 
-| Recipe | Picked automatically when | Default theme |
-|---|---|---|
-| `band` | 3 or more KPI cards: the KPIs sit on a dark header band | `navy` |
-| `rail` | 1-2 KPI cards and 2 or more charts: KPIs and findings in a left rail | `teal` |
-| `executive` | Otherwise: KPI row with findings beside it, chart grid; a single chart gets the findings next to it | `slate` |
+## Arrangements and themes
 
-`DashboardSpec.recipe` and `DashboardSpec.theme` default to `auto`. A user or BA reviewer can pick
-another fixed recipe or theme on the review page (it creates a new version that needs review). The
-planner never produces layouts; adding one means adding a tested recipe to `tableau_theme.py` and
-the layout code.
+| Arrangement | When "auto" can pick it |
+|---|---|
+| `executive` | Always: KPI strip, then the hero chart and the findings |
+| `rail` | 1-3 KPIs with a trend: KPIs in a left column beside the hero chart |
+| `band` | 3+ KPIs: KPIs on a dark header band |
+
+Themes: `slate`, `navy`, `teal`, `plum`, `forest`, `sunset` (one accent, a highlight, neutrals,
+a 10-colour categorical palette and a heatmap ramp each).
+
+With `recipe` / `theme` on `auto` (the default), the composer picks among the arrangements that
+fit the content and rotates the themes, so different dashboards look different; the same content
+always gets the same look. A user or BA reviewer can pin either on the review page (a new version
+that needs review). The planner never produces layouts: a new arrangement, form or theme is added
+to the code and tested.
 
 ## Checking how Tableau renders a change
 
@@ -41,7 +65,8 @@ Judge design changes on Tableau's rendering, not the XML:
 
 ```bash
 cd apps/api
-.venv/Scripts/python ../../scripts/render_dashboards.py          # publish samples, save var/renders/*.png
+.venv/Scripts/python ../../scripts/render_dashboards.py           # publish samples, save var/renders/*.png
+.venv/Scripts/python ../../scripts/render_dashboards.py --only 3  # one sample
 .venv/Scripts/python ../../scripts/render_dashboards.py --offline # only write the .twbx files
 ```
 

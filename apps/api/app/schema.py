@@ -18,7 +18,7 @@ Grain = Literal["month", "quarter"]
 OutputDecision = Literal["ANSWER_ONLY", "CHART_OR_ANALYSIS", "DASHBOARD_RECOMMENDATION"]
 Layout = Literal["executive_overview", "detailed_grid"]
 Recipe = Literal["auto", "executive", "band", "rail"]  # Tableau dashboard arrangement (tableau_theme.py)
-Theme = Literal["auto", "slate", "navy", "teal"]  # Tableau dashboard look
+Theme = Literal["auto", "slate", "navy", "teal", "plum", "forest", "sunset"]  # Tableau dashboard look
 VIZ_TYPES: tuple[str, ...] = ("kpi_card", "line", "bar", "table")
 
 

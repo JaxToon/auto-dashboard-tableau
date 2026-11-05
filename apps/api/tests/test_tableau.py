@@ -69,8 +69,8 @@ def test_artifact_structure(artifact):
     zone_names = {z.get("name") for z in root.iter("zone") if z.get("name")}
     assert zone_names == sheets  # every worksheet (KPI cards included) is on the dashboard
     assert set(art.kpi_expected) == {art.sheet_names[r.viz_id] for r in results if r.viz_type == "kpi_card"}
-    legends = [z for z in root.iter("zone") if z.get("type-v2") == "color"]
-    assert legends and all(z.get("param", "").endswith("[none:region:nk]") for z in legends)
+    assert not [z for z in root.iter("zone") if z.get("type-v2") == "color"]  # 8 regions over time: a heatmap, no legend
+    assert "Square" in {m.get("class") for m in root.iter("mark")}
     assert [d.get("name") for d in root.iter("dashboard")] == [art.dashboard_name]
     assert "SYNTHETIC" in ET.tostring(root, encoding="unicode")
 
@@ -227,15 +227,43 @@ def test_rules_planner_has_no_network_dependency():
 
 
 def test_style_choice_follows_content_shape_and_overrides():
-    from app.tableau_theme import choose_style
+    from app.tableau_theme import THEMES, choose_style
 
-    assert choose_style("auto", "auto", 3, 3)[0] == "band"
-    assert choose_style("auto", "auto", 1, 2)[0] == "rail"
-    assert choose_style("auto", "auto", 0, 1)[0] == "executive"
-    assert choose_style("auto", "auto", 2, 1)[0] == "executive"
+    assert choose_style("auto", "auto", 0, 1, False, "x")[0] == "executive"
+    assert choose_style("auto", "auto", 2, 3, True, "x")[0] in ("rail", "executive")
+    assert choose_style("auto", "auto", 5, 3, True, "x")[0] in ("band", "executive")
     recipe, theme = choose_style("rail", "slate", 0, 1)
     assert (recipe, theme.name) == ("rail", "slate")  # explicit choices win
-    assert choose_style("executive", "auto", 3, 3)[1].name == "slate"  # recipe's default theme
+    assert choose_style("auto", "auto", 3, 3, True, "same") == choose_style("auto", "auto", 3, 3, True, "same")  # stable
+    picked = {choose_style("auto", "auto", 3, 3, True, f"dashboard {i}")[1].name for i in range(40)}
+    assert len(picked) >= 4 and picked <= set(THEMES)  # different dashboards get different looks
+
+
+def test_chart_form_follows_the_kpi_and_shape(c):
+    from app.tableau_artifact import chart_form
+
+    m = c.catalog.metric
+    assert chart_form("line", m("total_outstanding"), 0, True, 0, False) == "area"
+    assert chart_form("line", m("total_outstanding"), 1, True, 4, False) == "spotlight"
+    assert chart_form("line", m("total_outstanding"), 1, True, 8, False) == "heatmap"
+    assert chart_form("bar", m("target_achievement_pct"), 1, False, 8, False) == "target"
+    assert chart_form("bar", m("outstanding_growth_pct"), 1, False, 8, False) == "dots"
+    assert chart_form("bar", m("total_outstanding"), 1, False, 8, False) == "ranked"
+    assert chart_form("bar", m("total_outstanding"), 0, True, 0, False) == "columns"
+    assert chart_form("bar", m("total_outstanding"), 1, False, 8, True) == "highlight"
+
+
+def test_forms_are_encoded_for_tableau(artifact):
+    _, root, _ = _twb(artifact[2])
+    cols = {c.get("name"): c for c in root.find("datasources").find("datasource[@caption='PoC KPI parts (Synthetic)']").findall("column")}
+    rank = next(c for n, c in cols.items() if "RANK(" in (c.find("calculation").get("formula") if c.find("calculation") is not None else ""))
+    assert rank.find("calculation/table-calc").get("ordering-type") == "Columns"  # down the members: top 3 recomputed under every filter
+    refs = {r.get("formula"): r for r in root.iter("reference-line")}
+    assert refs["constant"].get("value") == "1" and "average" in refs  # 100% target line, growth average
+    ramp = next(e for e in root.iter("encoding") if e.get("type") == "custom-interpolated")
+    assert len(ramp.findall("color-palette/color")) == 3
+    titles = ["".join(r.text or "" for r in ws.iter("run")) for ws in root.iter("worksheet") if ws.find("layout-options") is not None]
+    assert any("below the 100% target" in t for t in titles) and any("grew fastest" in t for t in titles)
 
 
 def _build(c, artifact, **overrides):
@@ -276,18 +304,6 @@ def test_kpi_card_shows_change_vs_previous_period_and_sparkline(artifact):
     assert f"{growth}__trend" not in art.sheet_names  # no period-over-period change for a growth rate
 
 
-def test_series_get_the_theme_palette_largest_first(c, artifact):
-    from app.tableau_theme import THEME_SET
-
-    for theme in ("slate", "navy", "teal"):
-        art = _build(c, artifact, theme=theme)
-        _, root, _ = _twb(art)
-        enc = next(e for e in root.iter("encoding") if e.get("field") == "[none:region:nk]")
-        first = enc.find("map")
-        assert first.get("to") == THEME_SET[theme].series[0] and first.find("bucket").text == '"Jakarta"'  # largest region
-        assert any(ci.get("name") == "[none:region:nk]" for ci in root.find("datasources").iter("column-instance"))
-
-
 @pytest.mark.parametrize("recipe", ["executive", "band", "rail"])
 def test_every_recipe_keeps_all_sheets_and_the_synthetic_notice(c, artifact, recipe):
     art = _build(c, artifact, recipe=recipe)
@@ -296,7 +312,22 @@ def test_every_recipe_keeps_all_sheets_and_the_synthetic_notice(c, artifact, rec
     assert zone_names == set(art.sheet_names.values())
     assert "POC / SYNTHETIC DATA - not actual bank performance" in ET.tostring(root, encoding="unicode")
     size = root.find(".//dashboard/size")
-    assert size.get("minheight") == size.get("maxheight") and int(size.get("maxwidth")) == 1400
+    assert size.get("minheight") == size.get("maxheight") and int(size.get("maxwidth")) == 1600
     for z in root.iter("zone"):
         if z.get("id") != "1":
             assert 0 <= int(z.get("x")) and int(z.get("x")) + int(z.get("w")) <= 100001, z.attrib
+
+
+def test_preview_design_plan_is_what_the_workbook_uses(c, artifact):
+    from app.tableau_artifact import design_plan
+
+    spec, results, art, _dims, _parts = artifact
+    plan = design_plan(spec, results, c.catalog)
+    d = plan.as_dict()
+    _, root, _ = _twb(art)
+    titles = {ws.get("name"): "".join(r.text or "" for r in ws.iter("run")) for ws in root.iter("worksheet")}
+    for vid, v in d["vizzes"].items():
+        if v["form"] != "kpi_card":
+            assert v["headline"] in titles[art.sheet_names[vid]]  # same headline in the app preview and in Tableau
+    page = root.find(".//dashboard/style/style-rule[@element='table']/format[@attr='background-color']").get("value")
+    assert d["theme"]["page"] == page and d["hero"] in art.sheet_names
